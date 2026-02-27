@@ -1,0 +1,21 @@
+appId: com.fontvectoreditor.app
+productName: Font Vector Editor
+copyright: Copyright © 2026
+
+mac:
+  category: public.app-category.graphics-design
+  target:
+    - dmg
+    - zip
+  icon: null
+  darkModeSupport: true
+
+files:
+  - dist/**/*
+  - dist-electron/**/*
+
+directories:
+  output: release
+  buildResources: build
+
+asar: true
