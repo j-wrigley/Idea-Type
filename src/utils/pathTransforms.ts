@@ -1112,50 +1112,44 @@ export function applyDesignTools(
       }
     }
 
-    // Roundness: scale control point handles relative to their segment's anchors
-    // Positive = more curvature, negative = flatter
-    if (tools.roundness !== 0 && !anchorIndices.has(cmdIdx)) {
+    // Roundness: scale control point handles relative to their owning anchor
+    // Positive = more curvature (handles extend), negative = flatter (handles contract)
+    if (tools.roundness !== 0 && (cmd.type === 'C' || cmd.type === 'Q')) {
       const factor = tools.roundness / 100;
-      // Find the anchor that owns this control point
-      if (c.x1 !== undefined && c.y1 !== undefined && cmd.x !== undefined && cmd.y !== undefined) {
-        // cp1 belongs to the segment from previous anchor to this anchor
-        // Scale cp1 handle length relative to segment midpoint
-        const segEndX = cmd.x;
-        const segEndY = cmd.y;
-        let segStartX = segEndX;
-        let segStartY = segEndY;
-        for (let k = cmdIdx - 1; k >= 0; k--) {
-          const prev = commands[k];
-          if (prev.x !== undefined && prev.y !== undefined) {
-            segStartX = prev.x;
-            segStartY = prev.y;
-            break;
-          }
+
+      // Find the previous endpoint (start anchor of this segment)
+      let prevX = c.x ?? 0, prevY = c.y ?? 0;
+      for (let k = cmdIdx - 1; k >= 0; k--) {
+        const prev = commands[k];
+        if (prev.x !== undefined && prev.y !== undefined) {
+          prevX = prev.x;
+          prevY = prev.y;
+          break;
         }
-        const midX = (segStartX + segEndX) / 2;
-        const midY = (segStartY + segEndY) / 2;
-        const dx1 = cmd.x1! - midX;
-        const dy1 = cmd.y1! - midY;
-        c.x1 = Math.round(midX + dx1 * (1 + factor * 0.5));
-        c.y1 = Math.round(midY + dy1 * (1 + factor * 0.5));
       }
-      if (c.x2 !== undefined && c.y2 !== undefined && cmd.x !== undefined && cmd.y !== undefined) {
-        let segStartX = cmd.x;
-        let segStartY = cmd.y;
-        for (let k = cmdIdx - 1; k >= 0; k--) {
-          const prev = commands[k];
-          if (prev.x !== undefined && prev.y !== undefined) {
-            segStartX = prev.x;
-            segStartY = prev.y;
-            break;
-          }
-        }
-        const midX = (segStartX + cmd.x) / 2;
-        const midY = (segStartY + cmd.y) / 2;
-        const dx2 = cmd.x2! - midX;
-        const dy2 = cmd.y2! - midY;
-        c.x2 = Math.round(midX + dx2 * (1 + factor * 0.5));
-        c.y2 = Math.round(midY + dy2 * (1 + factor * 0.5));
+
+      if (cmd.type === 'C' && c.x1 !== undefined && c.y1 !== undefined) {
+        // cp1 belongs to start anchor → scale relative to prevX/prevY
+        const hx = c.x1 - prevX;
+        const hy = c.y1 - prevY;
+        c.x1 = Math.round(prevX + hx * (1 + factor));
+        c.y1 = Math.round(prevY + hy * (1 + factor));
+      }
+      if (cmd.type === 'C' && c.x2 !== undefined && c.y2 !== undefined && c.x !== undefined && c.y !== undefined) {
+        // cp2 belongs to end anchor → scale relative to endpoint
+        const hx = c.x2 - c.x;
+        const hy = c.y2 - c.y;
+        c.x2 = Math.round(c.x + hx * (1 + factor));
+        c.y2 = Math.round(c.y + hy * (1 + factor));
+      }
+      if (cmd.type === 'Q' && c.x1 !== undefined && c.y1 !== undefined && c.x !== undefined && c.y !== undefined) {
+        // Quadratic: single CP — scale relative to the midpoint of the two anchors
+        const midX = (prevX + c.x) / 2;
+        const midY = (prevY + c.y) / 2;
+        const hx = c.x1 - midX;
+        const hy = c.y1 - midY;
+        c.x1 = Math.round(midX + hx * (1 + factor));
+        c.y1 = Math.round(midY + hy * (1 + factor));
       }
     }
 
