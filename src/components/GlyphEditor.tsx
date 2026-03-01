@@ -2279,8 +2279,125 @@ export const GlyphEditor: React.FC<GlyphEditorProps> = ({
           const snappedY = glyphPos.y + snap.snapDy;
           setShapeToolDrag(prev => prev ? { ...prev, currentGlyph: { x: snappedX, y: snappedY } } : null);
         } else {
-          setSnapGuides([]);
-          setShapeToolDrag(prev => prev ? { ...prev, currentGlyph: { x: glyphPos.x, y: glyphPos.y } } : null);
+          const handleId = shapeToolDragRef.current.handle!;
+          const isScale = !handleId.startsWith('skew_') && handleId !== 'rotate';
+
+          if (isScale) {
+            const ranges = getContourRanges(commands);
+            let origMinX = Infinity, origMinY = Infinity, origMaxX = -Infinity, origMaxY = -Infinity;
+            for (const ci of selectedContours) {
+              if (ci < 0 || ci >= ranges.length) continue;
+              const b = getContourBounds(commands, ci);
+              if (b.minX < origMinX) origMinX = b.minX;
+              if (b.minY < origMinY) origMinY = b.minY;
+              if (b.maxX > origMaxX) origMaxX = b.maxX;
+              if (b.maxY > origMaxY) origMaxY = b.maxY;
+            }
+
+            if (isFinite(origMinX)) {
+              const rawDx = glyphPos.x - shapeToolDragRef.current.startGlyph.x;
+              const rawDy = glyphPos.y - shapeToolDragRef.current.startGlyph.y;
+
+              const movingEdgesX: number[] = [];
+              if (handleId.includes('r')) movingEdgesX.push(origMaxX + rawDx);
+              if (handleId.includes('l')) movingEdgesX.push(origMinX + rawDx);
+
+              const movingEdgesY: number[] = [];
+              if (handleId.includes('t')) movingEdgesY.push(origMaxY + rawDy);
+              if (handleId.includes('b')) movingEdgesY.push(origMinY + rawDy);
+
+              const mapper = getMapper();
+              const thresh = SNAP_THRESHOLD_PX / mapper.scale;
+              const advW = glyph.advanceWidth || 0;
+
+              const candX: { pos: number; extMin: number; extMax: number }[] = [];
+              const candY: { pos: number; extMin: number; extMax: number }[] = [];
+              const draggedSet = new Set(selectedContours);
+
+              for (let ci = 0; ci < ranges.length; ci++) {
+                if (draggedSet.has(ci)) continue;
+                const b = getContourBounds(commands, ci);
+                if (!isFinite(b.minX)) continue;
+                const cx = (b.minX + b.maxX) / 2;
+                const cy = (b.minY + b.maxY) / 2;
+                candX.push({ pos: b.minX, extMin: b.minY, extMax: b.maxY });
+                candX.push({ pos: cx, extMin: b.minY, extMax: b.maxY });
+                candX.push({ pos: b.maxX, extMin: b.minY, extMax: b.maxY });
+                candY.push({ pos: b.minY, extMin: b.minX, extMax: b.maxX });
+                candY.push({ pos: cy, extMin: b.minX, extMax: b.maxX });
+                candY.push({ pos: b.maxY, extMin: b.minX, extMax: b.maxX });
+              }
+
+              const bigY = 2000;
+              candX.push({ pos: 0, extMin: -bigY, extMax: bigY });
+              if (advW > 0) candX.push({ pos: advW, extMin: -bigY, extMax: bigY });
+
+              for (const ml of metricLines) {
+                if (!ml.visible) continue;
+                candY.push({ pos: ml.value, extMin: -bigY, extMax: bigY });
+              }
+              candY.push({ pos: 0, extMin: -bigY, extMax: bigY });
+
+              if (gridSettings.snapToGrid && gridSettings.spacing > 0) {
+                const s = gridSettings.spacing;
+                for (const edgeX of movingEdgesX) {
+                  const gMin = Math.floor((edgeX - thresh * 2) / s) * s;
+                  const gMax = Math.ceil((edgeX + thresh * 2) / s) * s;
+                  for (let gx = gMin; gx <= gMax; gx += s) {
+                    candX.push({ pos: gx, extMin: -bigY, extMax: bigY });
+                  }
+                }
+                for (const edgeY of movingEdgesY) {
+                  const gMin = Math.floor((edgeY - thresh * 2) / s) * s;
+                  const gMax = Math.ceil((edgeY + thresh * 2) / s) * s;
+                  for (let gy = gMin; gy <= gMax; gy += s) {
+                    candY.push({ pos: gy, extMin: -bigY, extMax: bigY });
+                  }
+                }
+              }
+
+              let bestSnapDx = 0, bestDistX = thresh;
+              let bestGuideX: SnapGuide | null = null;
+              for (const edgeX of movingEdgesX) {
+                for (const c of candX) {
+                  const dist = Math.abs(edgeX - c.pos);
+                  if (dist < bestDistX) {
+                    bestDistX = dist;
+                    bestSnapDx = c.pos - edgeX;
+                    bestGuideX = { axis: 'v', position: c.pos, from: Math.min(c.extMin, origMinY, origMaxY), to: Math.max(c.extMax, origMinY, origMaxY) };
+                  }
+                }
+              }
+
+              let bestSnapDy = 0, bestDistY = thresh;
+              let bestGuideY: SnapGuide | null = null;
+              for (const edgeY of movingEdgesY) {
+                for (const c of candY) {
+                  const dist = Math.abs(edgeY - c.pos);
+                  if (dist < bestDistY) {
+                    bestDistY = dist;
+                    bestSnapDy = c.pos - edgeY;
+                    bestGuideY = { axis: 'h', position: c.pos, from: Math.min(c.extMin, origMinX, origMaxX), to: Math.max(c.extMax, origMinX, origMaxX) };
+                  }
+                }
+              }
+
+              const guides: SnapGuide[] = [];
+              if (bestGuideX) guides.push(bestGuideX);
+              if (bestGuideY) guides.push(bestGuideY);
+              setSnapGuides(guides);
+
+              const snappedX = glyphPos.x + bestSnapDx;
+              const snappedY = glyphPos.y + bestSnapDy;
+              setShapeToolDrag(prev => prev ? { ...prev, currentGlyph: { x: snappedX, y: snappedY } } : null);
+            } else {
+              setSnapGuides([]);
+              setShapeToolDrag(prev => prev ? { ...prev, currentGlyph: { x: glyphPos.x, y: glyphPos.y } } : null);
+            }
+          } else {
+            setSnapGuides([]);
+            setShapeToolDrag(prev => prev ? { ...prev, currentGlyph: { x: glyphPos.x, y: glyphPos.y } } : null);
+          }
         }
         return;
       }
@@ -2538,7 +2655,7 @@ export const GlyphEditor: React.FC<GlyphEditorProps> = ({
       const hit = findPointAtScreenPos(points, pos.x, pos.y, mapper.glyphToScreen);
       setHoveredPoint(hit);
     },
-    [getCanvasPos, getMapper, commands, isPanning, isDragging, isMarquee, marqueeStart, selectedPoints, onCommandsChange, onPanChange, onSelectedPointsChange, snapToGrid, cornerPoints, activeTool, constrainToAxis, onSetCornerPoints, shapeDragStart, sliceDragStart, selectedContours, onDragStart, onSelectedContoursChange, onMoveInstance, computeSnapGuides, glyph],
+    [getCanvasPos, getMapper, commands, isPanning, isDragging, isMarquee, marqueeStart, selectedPoints, onCommandsChange, onPanChange, onSelectedPointsChange, snapToGrid, cornerPoints, activeTool, constrainToAxis, onSetCornerPoints, shapeDragStart, sliceDragStart, selectedContours, onDragStart, onSelectedContoursChange, onMoveInstance, computeSnapGuides, glyph, metricLines, gridSettings],
   );
 
   const KAPPA = 0.5522847498;
