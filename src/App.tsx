@@ -13,6 +13,7 @@ import { TextPreview } from './components/TextPreview';
 import { KerningPanel } from './components/KerningPanel';
 import { ExportDialog, type ExportMetadata } from './components/ExportDialog';
 import { cloneCommands, removeDuplicatePoints, applyTransform, applyDesignTools, getContourRanges, reverseContour, reverseContours, makeContourCutout, makeContourFill, makeIndent, extractContours, removeContours, translateContourCommands, flipContourCommands, scaleContourCommands, getContourBounds, breakSegment } from './utils/pathTransforms';
+import { optimizeOutlines } from './utils/outlineOptimizer';
 import { slicePathWithLine } from './utils/slicePath';
 import { exportFont } from './utils/fontExport';
 import { getEditablePoints, deletePoints, splitSegmentAtT, convertSegmentToType } from './utils/hitTesting';
@@ -154,7 +155,8 @@ export default function App() {
     if (selectedGlyph && fontState.selectedGlyphIndex !== null) {
       const ownCmds = glyphOwnCommandsRef.current[fontState.selectedGlyphIndex];
       const rawCmds = ownCmds ? cloneCommands(ownCmds) : cloneCommands(selectedGlyph.path.commands);
-      setCommands(removeDuplicatePoints(rawCmds));
+      const upm = fontState.font?.unitsPerEm ?? 1000;
+      setCommands(optimizeOutlines(removeDuplicatePoints(rawCmds), upm));
       setTransform(DEFAULT_TRANSFORM);
       setDesignTools(DEFAULT_DESIGN_TOOLS);
       setSelectedPoints([]);
@@ -796,25 +798,44 @@ export default function App() {
     setTransform(DEFAULT_TRANSFORM);
   }, [commands, selectedContours, history]);
 
-  const handleNudge = useCallback((dx: number, dy: number) => {
+  const handleNudge = useCallback((dx: number, dy: number, mirror = false) => {
     if (selectedPoints.length === 0) return;
     history.pushState(commands);
     const newCommands = commands.map((cmd) => ({ ...cmd }));
     const updatedPoints: EditablePoint[] = [];
 
+    const onCurveEndpoints = selectedPoints.filter(p => p.field === 'end' && p.isOnCurve);
+    const useMirror = mirror && onCurveEndpoints.length >= 2;
+
+    let centroidX = 0;
+    let centroidY = 0;
+    if (useMirror) {
+      for (const ep of onCurveEndpoints) { centroidX += ep.x; centroidY += ep.y; }
+      centroidX /= onCurveEndpoints.length;
+      centroidY /= onCurveEndpoints.length;
+    }
+
     for (const pt of selectedPoints) {
       const cmd = { ...newCommands[pt.commandIndex] };
+      let ptDx = dx;
+      let ptDy = dy;
+      if (useMirror && pt.field === 'end' && pt.isOnCurve) {
+        const sx = Math.sign(pt.x - centroidX) || 1;
+        const sy = Math.sign(pt.y - centroidY) || 1;
+        ptDx = dx * sx;
+        ptDy = dy * sy;
+      }
       if (pt.field === 'end' && cmd.x !== undefined && cmd.y !== undefined) {
-        cmd.x += dx;
-        cmd.y += dy;
+        cmd.x += ptDx;
+        cmd.y += ptDy;
         updatedPoints.push({ ...pt, x: cmd.x, y: cmd.y });
       } else if (pt.field === 'cp1' && cmd.x1 !== undefined && cmd.y1 !== undefined) {
-        cmd.x1 += dx;
-        cmd.y1 += dy;
+        cmd.x1 += ptDx;
+        cmd.y1 += ptDy;
         updatedPoints.push({ ...pt, x: cmd.x1, y: cmd.y1 });
       } else if (pt.field === 'cp2' && cmd.x2 !== undefined && cmd.y2 !== undefined) {
-        cmd.x2 += dx;
-        cmd.y2 += dy;
+        cmd.x2 += ptDx;
+        cmd.y2 += ptDy;
         updatedPoints.push({ ...pt, x: cmd.x2, y: cmd.y2 });
       } else {
         updatedPoints.push(pt);
@@ -855,50 +876,123 @@ export default function App() {
     });
   }, []);
 
-  const handleConvertPointType = useCallback((targetType: 'L' | 'Q' | 'C') => {
+  // Unified point type conversion — each number key maps to a visual point type:
+  //   1 = Corner  (white square)   → segment → L, anchor = corner
+  //   2 = Smooth  (green circle)   → anchor = smooth, promote L→C if no curves exist
+  //   3 = Quadratic (yellow triangle) → segment → Q, anchor = smooth
+  //   4 = Cubic   (purple diamond)  → segment → C, anchor = smooth
+  const handleSetPointType = useCallback((pointType: 1 | 2 | 3 | 4) => {
     if (selectedPoints.length === 0) return;
-    history.pushState(commands);
+
     let newCommands = commands.map((cmd) => ({ ...cmd }));
+    let commandsChanged = false;
+
+    // Resolve command indices — for M (contour start), target the closing segment
     const indices = new Set<number>();
     for (const pt of selectedPoints) {
       const cmd = newCommands[pt.commandIndex];
-      if (cmd && cmd.type !== 'Z') {
-        if (cmd.type === 'M') {
-          // For the start point of a closed contour, find the closing segment
-          // (the last L/Q/C before the next Z) and convert that instead.
-          // If there's no explicit closing segment, materialize one.
-          let zIdx = -1;
-          for (let i = pt.commandIndex + 1; i < newCommands.length; i++) {
-            if (newCommands[i].type === 'Z') {
-              zIdx = i;
-              break;
-            }
+      if (!cmd || cmd.type === 'Z') continue;
+      if (cmd.type === 'M') {
+        let zIdx = -1;
+        for (let i = pt.commandIndex + 1; i < newCommands.length; i++) {
+          if (newCommands[i].type === 'Z') { zIdx = i; break; }
+        }
+        if (zIdx > pt.commandIndex) {
+          const beforeZ = newCommands[zIdx - 1];
+          if (beforeZ.type === 'L' || beforeZ.type === 'Q' || beforeZ.type === 'C') {
+            indices.add(zIdx - 1);
+          } else if (beforeZ.x !== undefined && beforeZ.y !== undefined && cmd.x !== undefined && cmd.y !== undefined) {
+            const closingL: PathCommand = { type: 'L', x: cmd.x, y: cmd.y };
+            newCommands.splice(zIdx, 0, closingL);
+            indices.add(zIdx);
+            commandsChanged = true;
           }
-          if (zIdx > pt.commandIndex) {
-            const beforeZ = newCommands[zIdx - 1];
-            if (beforeZ.type === 'L' || beforeZ.type === 'Q' || beforeZ.type === 'C') {
-              // The closing segment already has an explicit command
-              indices.add(zIdx - 1);
-            } else if (beforeZ.x !== undefined && beforeZ.y !== undefined && cmd.x !== undefined && cmd.y !== undefined) {
-              // No explicit closing segment — insert an L back to the start
-              const closingL: PathCommand = { type: 'L', x: cmd.x, y: cmd.y };
-              newCommands.splice(zIdx, 0, closingL);
-              indices.add(zIdx);
-            }
-          }
-        } else {
-          indices.add(pt.commandIndex);
+        }
+      } else {
+        indices.add(pt.commandIndex);
+      }
+    }
+
+    if (indices.size === 0) return;
+
+    // Convert segments based on target point type
+    for (const idx of indices) {
+      const cmd = newCommands[idx];
+      if (pointType === 1) {
+        // Corner: convert to Line
+        if (cmd.type !== 'L') {
+          newCommands = convertSegmentToType(newCommands, idx, 'L');
+          commandsChanged = true;
+        }
+      } else if (pointType === 2) {
+        // Smooth: promote L→C if the segment is a line, keep Q/C as-is
+        if (cmd.type === 'L') {
+          newCommands = convertSegmentToType(newCommands, idx, 'C');
+          commandsChanged = true;
+        }
+      } else if (pointType === 3) {
+        // Quadratic: convert to Q
+        if (cmd.type !== 'Q') {
+          newCommands = convertSegmentToType(newCommands, idx, 'Q');
+          commandsChanged = true;
+        }
+      } else if (pointType === 4) {
+        // Cubic: convert to C
+        if (cmd.type !== 'C') {
+          newCommands = convertSegmentToType(newCommands, idx, 'C');
+          commandsChanged = true;
         }
       }
     }
-    for (const idx of indices) {
-      newCommands = convertSegmentToType(newCommands, idx, targetType);
+
+    // Only push undo state if something actually changed
+    if (commandsChanged) {
+      history.pushState(commands);
+      setCommands(newCommands);
+      setTransform(DEFAULT_TRANSFORM);
     }
-    setCommands(newCommands);
-    setTransform(DEFAULT_TRANSFORM);
-    const newPts = getEditablePoints(newCommands);
+
+    // Update corner/smooth on the anchor points
+    setCornerPoints(prev => {
+      const next = new Set(prev);
+      for (const idx of indices) {
+        if (pointType === 1) {
+          next.add(idx);
+        } else {
+          next.delete(idx);
+        }
+      }
+      return next;
+    });
+
+    // Re-map selection to the most appropriate point in the new commands
+    const newPts = getEditablePoints(commandsChanged ? newCommands : commands);
     const updated = selectedPoints
-      .map((sp) => newPts.find((np) => np.commandIndex === sp.commandIndex && np.field === 'end'))
+      .map((sp) => {
+        const ci = sp.commandIndex;
+
+        if (pointType === 1) {
+          // Target is corner (on-curve) — select the endpoint
+          return newPts.find((np) => np.commandIndex === ci && np.field === 'end');
+        }
+        if (pointType === 2) {
+          // Target is smooth (on-curve) — select the endpoint
+          return newPts.find((np) => np.commandIndex === ci && np.field === 'end');
+        }
+        if (pointType === 3) {
+          // Target is quadratic CP — select cp1 (the triangle)
+          return newPts.find((np) => np.commandIndex === ci && np.field === 'cp1')
+            ?? newPts.find((np) => np.commandIndex === ci && np.field === 'end');
+        }
+        if (pointType === 4) {
+          // Target is cubic CP — select cp1 (the first diamond)
+          return newPts.find((np) => np.commandIndex === ci && np.field === 'cp1')
+            ?? newPts.find((np) => np.commandIndex === ci && np.field === 'end');
+        }
+
+        return newPts.find((np) => np.commandIndex === ci && np.field === sp.field)
+          ?? newPts.find((np) => np.commandIndex === ci && np.field === 'end');
+      })
       .filter((p): p is EditablePoint => p !== undefined);
     setSelectedPoints(updated);
   }, [commands, selectedPoints, history]);
@@ -1014,9 +1108,10 @@ export default function App() {
         return;
       }
 
-      if (e.key === '1') { e.preventDefault(); handleConvertPointType('L'); return; }
-      if (e.key === '2') { e.preventDefault(); handleConvertPointType('Q'); return; }
-      if (e.key === '3') { e.preventDefault(); handleConvertPointType('C'); return; }
+      if (e.key === '1') { e.preventDefault(); handleSetPointType(1); return; }
+      if (e.key === '2') { e.preventDefault(); handleSetPointType(2); return; }
+      if (e.key === '3') { e.preventDefault(); handleSetPointType(3); return; }
+      if (e.key === '4') { e.preventDefault(); handleSetPointType(4); return; }
       if (e.key === 'p' || e.key === 'P') {
         e.preventDefault();
         setActiveTool((t) => (t === 'pen' ? 'select' : 'pen'));
@@ -1076,7 +1171,7 @@ export default function App() {
           if (e.altKey) handleScaleContours(scaleDown, scaleDown, true);
           else handleScaleContours(scaleDown, 1, false);
         } else if (isShapeWithSelection) handleNudgeContours(-nudgeAmount, 0);
-        else handleNudge(-nudgeAmount, 0);
+        else handleNudge(-nudgeAmount, 0, e.altKey);
         return;
       }
       if (e.key === 'ArrowRight') {
@@ -1085,7 +1180,7 @@ export default function App() {
           if (e.altKey) handleScaleContours(scaleUp, scaleUp, true);
           else handleScaleContours(scaleUp, 1, false);
         } else if (isShapeWithSelection) handleNudgeContours(nudgeAmount, 0);
-        else handleNudge(nudgeAmount, 0);
+        else handleNudge(nudgeAmount, 0, e.altKey);
         return;
       }
       if (e.key === 'ArrowUp') {
@@ -1094,7 +1189,7 @@ export default function App() {
           if (e.altKey) handleScaleContours(scaleUp, scaleUp, true);
           else handleScaleContours(1, scaleUp, false);
         } else if (isShapeWithSelection) handleNudgeContours(0, nudgeAmount);
-        else handleNudge(0, nudgeAmount);
+        else handleNudge(0, nudgeAmount, e.altKey);
         return;
       }
       if (e.key === 'ArrowDown') {
@@ -1103,13 +1198,13 @@ export default function App() {
           if (e.altKey) handleScaleContours(scaleDown, scaleDown, true);
           else handleScaleContours(1, scaleDown, false);
         } else if (isShapeWithSelection) handleNudgeContours(0, -nudgeAmount);
-        else handleNudge(0, -nudgeAmount);
+        else handleNudge(0, -nudgeAmount, e.altKey);
         return;
       }
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [handleUndo, handleRedo, handleSelectAll, handleSave, loadFont, handleDeletePoints, handleNudge, handleNudgeContours, handleScaleContours, cycleGlyph, handleConvertPointType, commands, history, handleReverseContour, handleFlipContour, activeTool, selectedContours, editingComponentId, commitComponentEdit, setSelectedComponentId]);
+  }, [handleUndo, handleRedo, handleSelectAll, handleSave, loadFont, handleDeletePoints, handleNudge, handleNudgeContours, handleScaleContours, cycleGlyph, handleSetPointType, commands, history, handleReverseContour, handleFlipContour, activeTool, selectedContours, editingComponentId, commitComponentEdit, setSelectedComponentId]);
 
   if (!fontState.font) {
     return <FontUploader onFontLoaded={loadFontFromBuffer} onOpenDialog={loadFont} onCreateNew={createNewFont} />;

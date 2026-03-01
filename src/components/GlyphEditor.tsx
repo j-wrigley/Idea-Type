@@ -77,10 +77,14 @@ const DARK_COLORS = {
   advanceWidth: 'rgba(255, 255, 255, 0.15)',
   glyphFill: 'rgba(255, 255, 255, 0.06)',
   glyphStroke: '#ffffff',
-  onCurvePoint: '#ffffff',
-  offCurvePoint: '#888888',
+  cornerPoint: '#ffffff',
+  smoothPoint: '#4ec9b0',
+  cubicControlPoint: '#c586c0',
+  quadControlPoint: '#dcdcaa',
   handleLine: 'rgba(255, 255, 255, 0.3)',
-  hoverHighlight: '#cccccc',
+  handleLineCubic: 'rgba(197, 134, 192, 0.35)',
+  handleLineQuad: 'rgba(220, 220, 170, 0.35)',
+  hoverHighlight: '#60d0ff',
   selectHighlight: '#ffffff',
   originMarker: 'rgba(255, 255, 255, 0.3)',
   pointInfoText: 'rgba(224, 224, 224, 0.8)',
@@ -98,6 +102,8 @@ const DARK_COLORS = {
   metricCapHeight: 'rgba(200, 150, 50, 0.3)',
   metricOvershoot: 'rgba(255, 100, 100, 0.2)',
   metricCustom: 'rgba(150, 100, 255, 0.3)',
+  snapGuide: 'rgba(255, 70, 70, 0.85)',
+  snapGuideDim: 'rgba(255, 70, 70, 0.3)',
 };
 
 const LIGHT_COLORS = {
@@ -111,10 +117,14 @@ const LIGHT_COLORS = {
   advanceWidth: 'rgba(0, 0, 0, 0.12)',
   glyphFill: 'rgba(0, 0, 0, 0.06)',
   glyphStroke: '#111111',
-  onCurvePoint: '#111111',
-  offCurvePoint: '#777777',
+  cornerPoint: '#222222',
+  smoothPoint: '#2a8a78',
+  cubicControlPoint: '#9b4d96',
+  quadControlPoint: '#8a8530',
   handleLine: 'rgba(0, 0, 0, 0.25)',
-  hoverHighlight: '#444444',
+  handleLineCubic: 'rgba(155, 77, 150, 0.3)',
+  handleLineQuad: 'rgba(138, 133, 48, 0.3)',
+  hoverHighlight: '#0088cc',
   selectHighlight: '#000000',
   originMarker: 'rgba(0, 0, 0, 0.25)',
   pointInfoText: 'rgba(30, 30, 30, 0.8)',
@@ -132,7 +142,18 @@ const LIGHT_COLORS = {
   penPreview: 'rgba(0, 100, 200, 0.5)',
   penPreviewHandle: 'rgba(0, 100, 200, 0.7)',
   penPreviewFill: 'rgba(0, 100, 200, 0.1)',
+  snapGuide: 'rgba(220, 40, 40, 0.85)',
+  snapGuideDim: 'rgba(220, 40, 40, 0.3)',
 };
+
+type SnapGuide = {
+  axis: 'h' | 'v';
+  position: number;
+  from: number;
+  to: number;
+};
+
+const SNAP_THRESHOLD_PX = 8;
 
 const RULER_SIZE = 24;
 
@@ -199,6 +220,7 @@ export const GlyphEditor: React.FC<GlyphEditorProps> = ({
   const penDragRef = useRef<{ screen: { x: number; y: number }; glyph: { x: number; y: number } } | null>(null);
   const brokenLinksRef = useRef<Set<number>>(new Set());
   const [penCursorGlyph, setPenCursorGlyph] = useState<{ x: number; y: number } | null>(null);
+  const [penSegmentSnap, setPenSegmentSnap] = useState<{ x: number; y: number } | null>(null);
   const [penDragState, setPenDragState] = useState<{
     downGlyph: { x: number; y: number };
     currentGlyph: { x: number; y: number };
@@ -229,6 +251,8 @@ export const GlyphEditor: React.FC<GlyphEditorProps> = ({
   const shapeToolDragRef = useRef(shapeToolDrag);
   shapeToolDragRef.current = shapeToolDrag;
 
+  const [snapGuides, setSnapGuides] = useState<SnapGuide[]>([]);
+
   const [instanceDrag, setInstanceDrag] = useState<{
     instanceIndex: number;
     startOffsetX: number;
@@ -241,6 +265,7 @@ export const GlyphEditor: React.FC<GlyphEditorProps> = ({
   useEffect(() => {
     if (activeTool !== 'pen') {
       setPenCursorGlyph(null);
+      setPenSegmentSnap(null);
       setPenDragState(null);
       penStateRef.current = null;
     }
@@ -254,6 +279,7 @@ export const GlyphEditor: React.FC<GlyphEditorProps> = ({
     }
     if (activeTool !== 'shape') {
       setShapeToolDrag(null);
+      setSnapGuides([]);
       onSelectedContoursChange([]);
     }
   }, [activeTool, onSelectedContoursChange]);
@@ -697,7 +723,7 @@ export const GlyphEditor: React.FC<GlyphEditorProps> = ({
           const cp = mapper.glyphToScreen(cmd.x1, cmd.y1);
           if (prevEndpoint) {
             const pe = mapper.glyphToScreen(prevEndpoint.x, prevEndpoint.y);
-            ctx.strokeStyle = COLORS.handleLine;
+            ctx.strokeStyle = COLORS.handleLineQuad;
             ctx.lineWidth = 1;
             ctx.beginPath();
             ctx.moveTo(pe.x, pe.y);
@@ -722,7 +748,7 @@ export const GlyphEditor: React.FC<GlyphEditorProps> = ({
           const cp2 = mapper.glyphToScreen(cmd.x2, cmd.y2);
           if (prevEndpoint) {
             const pe = mapper.glyphToScreen(prevEndpoint.x, prevEndpoint.y);
-            ctx.strokeStyle = COLORS.handleLine;
+            ctx.strokeStyle = COLORS.handleLineCubic;
             ctx.lineWidth = 1;
             ctx.beginPath();
             ctx.moveTo(pe.x, pe.y);
@@ -746,7 +772,11 @@ export const GlyphEditor: React.FC<GlyphEditorProps> = ({
         }
       }
 
-      // Draw points
+      // Draw points with distinct colors per type:
+      //   Corner (on-curve, sharp)    = square, cornerPoint color
+      //   Smooth (on-curve, tangent)   = circle, smoothPoint color
+      //   Cubic control (C: cp1/cp2)   = diamond, cubicControlPoint color
+      //   Quadratic control (Q: cp1)   = triangle, quadControlPoint color
       for (const pt of editablePoints) {
         const screen = mapper.glyphToScreen(pt.x, pt.y);
         const isHovered =
@@ -754,42 +784,98 @@ export const GlyphEditor: React.FC<GlyphEditorProps> = ({
           hoveredPoint?.field === pt.field;
         const isSelected = selectedSet.has(pointKey(pt));
 
-        const size = pt.isOnCurve ? 5 : 4;
-
-        if (isSelected) {
-          ctx.fillStyle = COLORS.selectHighlight;
-          ctx.strokeStyle = COLORS.selectHighlight;
-        } else if (isHovered) {
-          ctx.fillStyle = COLORS.hoverHighlight;
-          ctx.strokeStyle = COLORS.hoverHighlight;
-        } else {
-          ctx.fillStyle = pt.isOnCurve ? COLORS.onCurvePoint : COLORS.offCurvePoint;
-          ctx.strokeStyle = pt.isOnCurve ? COLORS.onCurvePoint : COLORS.offCurvePoint;
-        }
-
         const cmd = commands[pt.commandIndex];
         const nextCmd = pt.commandIndex + 1 < commands.length ? commands[pt.commandIndex + 1] : null;
         const hasCurveIn = cmd?.type === 'Q' || cmd?.type === 'C';
         const hasCurveOut = nextCmd && (nextCmd.type === 'Q' || nextCmd.type === 'C');
         const isSmooth = pt.isOnCurve && pt.field === 'end' && !cornerPoints.has(pt.commandIndex) && (hasCurveIn || hasCurveOut);
 
-        if (pt.isOnCurve && !isSmooth) {
+        // Determine point category
+        const isCubicCP = !pt.isOnCurve && cmd?.type === 'C';
+        const isQuadCP = !pt.isOnCurve && cmd?.type === 'Q';
+        const isCorner = pt.isOnCurve && !isSmooth;
+
+        // Pick color by point type
+        let pointColor: string;
+        if (isSelected) {
+          pointColor = COLORS.selectHighlight;
+        } else if (isHovered) {
+          pointColor = COLORS.hoverHighlight;
+        } else if (isCorner) {
+          pointColor = COLORS.cornerPoint;
+        } else if (isSmooth) {
+          pointColor = COLORS.smoothPoint;
+        } else if (isQuadCP) {
+          pointColor = COLORS.quadControlPoint;
+        } else if (isCubicCP) {
+          pointColor = COLORS.cubicControlPoint;
+        } else {
+          pointColor = COLORS.cornerPoint;
+        }
+
+        ctx.fillStyle = pointColor;
+        ctx.strokeStyle = pointColor;
+
+        const size = pt.isOnCurve ? 5 : 4;
+
+        if (isCorner) {
+          // Square for corner points
           ctx.fillRect(screen.x - size, screen.y - size, size * 2, size * 2);
+        } else if (isSmooth) {
+          // Circle for smooth on-curve points
+          ctx.beginPath();
+          ctx.arc(screen.x, screen.y, size, 0, Math.PI * 2);
+          ctx.fill();
+        } else if (isCubicCP) {
+          // Diamond for cubic control points
+          ctx.beginPath();
+          ctx.moveTo(screen.x, screen.y - size - 1);
+          ctx.lineTo(screen.x + size + 1, screen.y);
+          ctx.lineTo(screen.x, screen.y + size + 1);
+          ctx.lineTo(screen.x - size - 1, screen.y);
+          ctx.closePath();
+          ctx.fill();
+        } else if (isQuadCP) {
+          // Triangle for quadratic control points
+          const r = size + 1;
+          ctx.beginPath();
+          ctx.moveTo(screen.x, screen.y - r);
+          ctx.lineTo(screen.x + r, screen.y + r * 0.7);
+          ctx.lineTo(screen.x - r, screen.y + r * 0.7);
+          ctx.closePath();
+          ctx.fill();
         } else {
           ctx.beginPath();
           ctx.arc(screen.x, screen.y, size, 0, Math.PI * 2);
           ctx.fill();
         }
 
+        // Selection/hover ring
         if (isSelected || isHovered) {
           ctx.lineWidth = 2;
-          if (pt.isOnCurve && !isSmooth) {
+          if (isCorner) {
             ctx.strokeRect(
               screen.x - size - 2,
               screen.y - size - 2,
               (size + 2) * 2,
               (size + 2) * 2,
             );
+          } else if (isCubicCP) {
+            ctx.beginPath();
+            ctx.moveTo(screen.x, screen.y - size - 4);
+            ctx.lineTo(screen.x + size + 4, screen.y);
+            ctx.lineTo(screen.x, screen.y + size + 4);
+            ctx.lineTo(screen.x - size - 4, screen.y);
+            ctx.closePath();
+            ctx.stroke();
+          } else if (isQuadCP) {
+            const r = size + 4;
+            ctx.beginPath();
+            ctx.moveTo(screen.x, screen.y - r);
+            ctx.lineTo(screen.x + r, screen.y + r * 0.7);
+            ctx.lineTo(screen.x - r, screen.y + r * 0.7);
+            ctx.closePath();
+            ctx.stroke();
           } else {
             ctx.beginPath();
             ctx.arc(screen.x, screen.y, size + 3, 0, Math.PI * 2);
@@ -972,6 +1058,34 @@ export const GlyphEditor: React.FC<GlyphEditorProps> = ({
             }
           }
         }
+      }
+
+      // Snap-to-segment indicator: shows a dot + ring on the path when hovering
+      if (penSegmentSnap && !penStateRef.current) {
+        const sSnap = mapper.glyphToScreen(penSegmentSnap.x, penSegmentSnap.y);
+
+        // Outer ring
+        ctx.strokeStyle = COLORS.penPreview;
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.arc(sSnap.x, sSnap.y, 8, 0, Math.PI * 2);
+        ctx.stroke();
+
+        // Inner filled dot
+        ctx.fillStyle = COLORS.penPreviewHandle;
+        ctx.beginPath();
+        ctx.arc(sSnap.x, sSnap.y, 3.5, 0, Math.PI * 2);
+        ctx.fill();
+
+        // "+" indicator
+        ctx.strokeStyle = COLORS.penPreviewHandle;
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        ctx.moveTo(sSnap.x + 12, sSnap.y - 5);
+        ctx.lineTo(sSnap.x + 12, sSnap.y + 5);
+        ctx.moveTo(sSnap.x + 7, sSnap.y);
+        ctx.lineTo(sSnap.x + 17, sSnap.y);
+        ctx.stroke();
       }
     }
 
@@ -1350,6 +1464,53 @@ export const GlyphEditor: React.FC<GlyphEditorProps> = ({
       }
     }
 
+    // Snap guide lines
+    if (snapGuides.length > 0) {
+      ctx.save();
+      ctx.strokeStyle = COLORS.snapGuide;
+      ctx.lineWidth = 1;
+      ctx.setLineDash([]);
+      for (const guide of snapGuides) {
+        if (guide.axis === 'v') {
+          const top = mapper.glyphToScreen(guide.position, guide.to);
+          const bot = mapper.glyphToScreen(guide.position, guide.from);
+          ctx.beginPath();
+          ctx.moveTo(Math.round(top.x) + 0.5, top.y);
+          ctx.lineTo(Math.round(bot.x) + 0.5, bot.y);
+          ctx.stroke();
+          // Diamond markers at snap points
+          for (const sy of [top.y, bot.y]) {
+            ctx.fillStyle = COLORS.snapGuide;
+            ctx.beginPath();
+            ctx.moveTo(top.x, sy - 3);
+            ctx.lineTo(top.x + 3, sy);
+            ctx.lineTo(top.x, sy + 3);
+            ctx.lineTo(top.x - 3, sy);
+            ctx.closePath();
+            ctx.fill();
+          }
+        } else {
+          const left = mapper.glyphToScreen(guide.from, guide.position);
+          const right = mapper.glyphToScreen(guide.to, guide.position);
+          ctx.beginPath();
+          ctx.moveTo(left.x, Math.round(left.y) + 0.5);
+          ctx.lineTo(right.x, Math.round(right.y) + 0.5);
+          ctx.stroke();
+          for (const sx of [left.x, right.x]) {
+            ctx.fillStyle = COLORS.snapGuide;
+            ctx.beginPath();
+            ctx.moveTo(sx - 3, left.y);
+            ctx.lineTo(sx, left.y - 3);
+            ctx.lineTo(sx + 3, left.y);
+            ctx.lineTo(sx, left.y + 3);
+            ctx.closePath();
+            ctx.fill();
+          }
+        }
+      }
+      ctx.restore();
+    }
+
     // Marquee selection rectangle
     if (isMarquee && marqueeStart && marqueeEnd) {
       const mx = Math.min(marqueeStart.x, marqueeEnd.x);
@@ -1461,10 +1622,12 @@ export const GlyphEditor: React.FC<GlyphEditorProps> = ({
           height - 12,
         );
       } else {
-        ctx.fillText(`${selectedPoints.length} points selected`, 12, height - 12);
+        const onCurveCount = selectedPoints.filter(p => p.field === 'end' && p.isOnCurve).length;
+        const hint = onCurveCount >= 2 ? '  ·  ⌥+drag to mirror' : '';
+        ctx.fillText(`${selectedPoints.length} points selected${hint}`, 12, height - 12);
       }
     }
-  }, [commands, canvasSize, font, glyph, zoom, panX, panY, hoveredPoint, selectedSet, selectedPoints, getMapper, COLORS, gridSettings, showRulers, showPathDirection, isMarquee, marqueeStart, marqueeEnd, cursorPos, cornerPoints, activeTool, penCursorGlyph, penDragState, showFill, theme, contextGlyphs, metricLines, shapeDragStart, shapeDragCurrent, sliceDragStart, sliceDragCurrent, selectedContours, shapeToolDrag, componentInstances]);
+  }, [commands, canvasSize, font, glyph, zoom, panX, panY, hoveredPoint, selectedSet, selectedPoints, getMapper, COLORS, gridSettings, showRulers, showPathDirection, isMarquee, marqueeStart, marqueeEnd, cursorPos, cornerPoints, activeTool, penCursorGlyph, penSegmentSnap, penDragState, showFill, theme, contextGlyphs, metricLines, shapeDragStart, shapeDragCurrent, sliceDragStart, sliceDragCurrent, selectedContours, shapeToolDrag, componentInstances, snapGuides]);
 
   const getCanvasPos = useCallback(
     (e: React.MouseEvent): { x: number; y: number } => {
@@ -1494,6 +1657,117 @@ export const GlyphEditor: React.FC<GlyphEditorProps> = ({
       };
     },
     [gridSettings],
+  );
+
+  const computeSnapGuides = useCallback(
+    (
+      draggedBounds: { minX: number; minY: number; maxX: number; maxY: number },
+      allCommands: PathCommand[],
+      draggedContourIndices: number[],
+      advW: number,
+    ): { snapDx: number; snapDy: number; guides: SnapGuide[] } => {
+      const mapper = getMapper();
+      const thresh = SNAP_THRESHOLD_PX / mapper.scale;
+
+      const ranges = getContourRanges(allCommands);
+      const guides: SnapGuide[] = [];
+
+      const dragCx = (draggedBounds.minX + draggedBounds.maxX) / 2;
+      const dragCy = (draggedBounds.minY + draggedBounds.maxY) / 2;
+
+      // Source edges/centers from the dragged contour
+      const srcX = [draggedBounds.minX, dragCx, draggedBounds.maxX];
+      const srcY = [draggedBounds.minY, dragCy, draggedBounds.maxY];
+
+      // Collect candidate snap positions
+      const candX: { pos: number; extMin: number; extMax: number }[] = [];
+      const candY: { pos: number; extMin: number; extMax: number }[] = [];
+      const draggedSet = new Set(draggedContourIndices);
+
+      // Other contour edges and centers
+      for (let ci = 0; ci < ranges.length; ci++) {
+        if (draggedSet.has(ci)) continue;
+        const b = getContourBounds(allCommands, ci);
+        if (!isFinite(b.minX)) continue;
+        const cx = (b.minX + b.maxX) / 2;
+        const cy = (b.minY + b.maxY) / 2;
+        candX.push({ pos: b.minX, extMin: b.minY, extMax: b.maxY });
+        candX.push({ pos: cx, extMin: b.minY, extMax: b.maxY });
+        candX.push({ pos: b.maxX, extMin: b.minY, extMax: b.maxY });
+        candY.push({ pos: b.minY, extMin: b.minX, extMax: b.maxX });
+        candY.push({ pos: cy, extMin: b.minX, extMax: b.maxX });
+        candY.push({ pos: b.maxY, extMin: b.minX, extMax: b.maxX });
+      }
+
+      // Advance width lines (x=0 and x=advW)
+      const bigY = 2000;
+      candX.push({ pos: 0, extMin: -bigY, extMax: bigY });
+      if (advW > 0) candX.push({ pos: advW, extMin: -bigY, extMax: bigY });
+
+      // Font metric lines
+      for (const ml of metricLines) {
+        if (!ml.visible) continue;
+        candY.push({ pos: ml.value, extMin: -bigY, extMax: bigY });
+      }
+      // Baseline always
+      candY.push({ pos: 0, extMin: -bigY, extMax: bigY });
+
+      // Grid lines (if snap-to-grid enabled)
+      if (gridSettings.snapToGrid && gridSettings.spacing > 0) {
+        const s = gridSettings.spacing;
+        const gMinX = Math.floor((draggedBounds.minX - thresh * 2) / s) * s;
+        const gMaxX = Math.ceil((draggedBounds.maxX + thresh * 2) / s) * s;
+        const gMinY = Math.floor((draggedBounds.minY - thresh * 2) / s) * s;
+        const gMaxY = Math.ceil((draggedBounds.maxY + thresh * 2) / s) * s;
+        for (let gx = gMinX; gx <= gMaxX; gx += s) {
+          candX.push({ pos: gx, extMin: -bigY, extMax: bigY });
+        }
+        for (let gy = gMinY; gy <= gMaxY; gy += s) {
+          candY.push({ pos: gy, extMin: -bigY, extMax: bigY });
+        }
+      }
+
+      // Find best snap on each axis
+      let bestSnapX = 0;
+      let bestDistX = thresh;
+      let bestGuideX: SnapGuide | null = null;
+
+      for (const s of srcX) {
+        for (const c of candX) {
+          const dist = Math.abs(s - c.pos);
+          if (dist < bestDistX) {
+            bestDistX = dist;
+            bestSnapX = c.pos - s;
+            const extMin = Math.min(c.extMin, draggedBounds.minY, draggedBounds.maxY);
+            const extMax = Math.max(c.extMax, draggedBounds.minY, draggedBounds.maxY);
+            bestGuideX = { axis: 'v', position: c.pos, from: extMin, to: extMax };
+          }
+        }
+      }
+
+      let bestSnapY = 0;
+      let bestDistY = thresh;
+      let bestGuideY: SnapGuide | null = null;
+
+      for (const s of srcY) {
+        for (const c of candY) {
+          const dist = Math.abs(s - c.pos);
+          if (dist < bestDistY) {
+            bestDistY = dist;
+            bestSnapY = c.pos - s;
+            const extMin = Math.min(c.extMin, draggedBounds.minX, draggedBounds.maxX);
+            const extMax = Math.max(c.extMax, draggedBounds.minX, draggedBounds.maxX);
+            bestGuideY = { axis: 'h', position: c.pos, from: extMin, to: extMax };
+          }
+        }
+      }
+
+      if (bestGuideX) guides.push(bestGuideX);
+      if (bestGuideY) guides.push(bestGuideY);
+
+      return { snapDx: bestSnapX, snapDy: bestSnapY, guides };
+    },
+    [getMapper, gridSettings, metricLines],
   );
 
   const handleMouseDown = useCallback(
@@ -1714,6 +1988,7 @@ export const GlyphEditor: React.FC<GlyphEditorProps> = ({
             } else {
               onSelectedContoursChange([]);
               setShapeToolDrag(null);
+              setSnapGuides([]);
             }
           }
         }
@@ -1763,6 +2038,20 @@ export const GlyphEditor: React.FC<GlyphEditorProps> = ({
           }
         }
 
+        // When not actively drawing, clicking on a segment adds a point to it
+        // (but skip if an existing point is directly under the cursor)
+        if (!penStateRef.current && commands.length > 0) {
+          const editPts = getEditablePoints(commands);
+          const hitPoint = findPointAtScreenPos(editPts, pos.x, pos.y, mapper.glyphToScreen.bind(mapper));
+          if (!hitPoint) {
+            const segHit = findSegmentAtScreenPos(commands, pos.x, pos.y, mapper.glyphToScreen.bind(mapper));
+            if (segHit) {
+              onAddPoint(segHit.commandIndex, segHit.t);
+              return;
+            }
+          }
+        }
+
         // Attach to open contour endpoint: if no active contour, check if click is near any open path's end
         if (!penStateRef.current && commands.length > 0) {
           const ranges = getContourRanges(commands);
@@ -1786,7 +2075,6 @@ export const GlyphEditor: React.FC<GlyphEditorProps> = ({
               contourStartIdx: bestRange.start,
               outgoingHandle: null,
             };
-            // If click was directly on the endpoint, don't add a point — just attach and wait for next click
             const ON_ENDPOINT_THRESHOLD = 5;
             if (bestDist < ON_ENDPOINT_THRESHOLD) {
               return;
@@ -1960,7 +2248,40 @@ export const GlyphEditor: React.FC<GlyphEditorProps> = ({
           }
         }
 
-        setShapeToolDrag(prev => prev ? { ...prev, currentGlyph: { x: glyphPos.x, y: glyphPos.y } } : null);
+        // Snap guides for move operations (no handle = pure translation)
+        if (!shapeToolDragRef.current.handle) {
+          const rawDx = glyphPos.x - shapeToolDragRef.current.startGlyph.x;
+          const rawDy = glyphPos.y - shapeToolDragRef.current.startGlyph.y;
+
+          const ranges = getContourRanges(commands);
+          let bMinX = Infinity, bMinY = Infinity, bMaxX = -Infinity, bMaxY = -Infinity;
+          for (const ci of selectedContours) {
+            if (ci < 0 || ci >= ranges.length) continue;
+            const b = getContourBounds(commands, ci);
+            if (b.minX < bMinX) bMinX = b.minX;
+            if (b.minY < bMinY) bMinY = b.minY;
+            if (b.maxX > bMaxX) bMaxX = b.maxX;
+            if (b.maxY > bMaxY) bMaxY = b.maxY;
+          }
+
+          const movedBounds = {
+            minX: bMinX + rawDx,
+            minY: bMinY + rawDy,
+            maxX: bMaxX + rawDx,
+            maxY: bMaxY + rawDy,
+          };
+
+          const advW = glyph.advanceWidth || 0;
+          const snap = computeSnapGuides(movedBounds, commands, selectedContours, advW);
+          setSnapGuides(snap.guides);
+
+          const snappedX = glyphPos.x + snap.snapDx;
+          const snappedY = glyphPos.y + snap.snapDy;
+          setShapeToolDrag(prev => prev ? { ...prev, currentGlyph: { x: snappedX, y: snappedY } } : null);
+        } else {
+          setSnapGuides([]);
+          setShapeToolDrag(prev => prev ? { ...prev, currentGlyph: { x: glyphPos.x, y: glyphPos.y } } : null);
+        }
         return;
       }
 
@@ -1971,7 +2292,6 @@ export const GlyphEditor: React.FC<GlyphEditorProps> = ({
 
         if (penDragRef.current) {
           const downPt = penDragRef.current.glyph;
-          // Handle position should NOT be grid-snapped — it follows cursor freely
           let dragTarget = { x: Math.round(glyphPos.x), y: Math.round(glyphPos.y) };
           if (e.shiftKey) {
             dragTarget = constrainToAxis(downPt, dragTarget);
@@ -1979,6 +2299,7 @@ export const GlyphEditor: React.FC<GlyphEditorProps> = ({
           }
           setPenDragState({ downGlyph: downPt, currentGlyph: dragTarget });
           setPenCursorGlyph(dragTarget);
+          setPenSegmentSnap(null);
         } else {
           if (e.shiftKey && penStateRef.current) {
             let lastPt: { x: number; y: number } | null = null;
@@ -1994,6 +2315,46 @@ export const GlyphEditor: React.FC<GlyphEditorProps> = ({
             }
           }
           setPenCursorGlyph({ x: snapped.x, y: snapped.y });
+
+          // Show snap indicator when hovering over an existing segment (not actively drawing)
+          if (!penStateRef.current && commands.length > 0) {
+            const editPts = getEditablePoints(commands);
+            const hitPt = findPointAtScreenPos(editPts, pos.x, pos.y, mapper.glyphToScreen.bind(mapper));
+            if (!hitPt) {
+              const segHit = findSegmentAtScreenPos(commands, pos.x, pos.y, mapper.glyphToScreen.bind(mapper));
+              if (segHit) {
+                const cmd = commands[segHit.commandIndex];
+                let prevX = 0, prevY = 0;
+                for (let si = segHit.commandIndex - 1; si >= 0; si--) {
+                  const sc = commands[si];
+                  if (sc.x !== undefined && sc.y !== undefined) { prevX = sc.x; prevY = sc.y; break; }
+                }
+                let snapX: number, snapY: number;
+                const t = segHit.t;
+                if (cmd.type === 'L' && cmd.x !== undefined && cmd.y !== undefined) {
+                  snapX = prevX + t * (cmd.x - prevX);
+                  snapY = prevY + t * (cmd.y - prevY);
+                } else if (cmd.type === 'Q' && cmd.x1 !== undefined && cmd.y1 !== undefined && cmd.x !== undefined && cmd.y !== undefined) {
+                  const u = 1 - t;
+                  snapX = u * u * prevX + 2 * u * t * cmd.x1 + t * t * cmd.x;
+                  snapY = u * u * prevY + 2 * u * t * cmd.y1 + t * t * cmd.y;
+                } else if (cmd.type === 'C' && cmd.x1 !== undefined && cmd.y1 !== undefined && cmd.x2 !== undefined && cmd.y2 !== undefined && cmd.x !== undefined && cmd.y !== undefined) {
+                  const u = 1 - t;
+                  snapX = u * u * u * prevX + 3 * u * u * t * cmd.x1 + 3 * u * t * t * cmd.x2 + t * t * t * cmd.x;
+                  snapY = u * u * u * prevY + 3 * u * u * t * cmd.y1 + 3 * u * t * t * cmd.y2 + t * t * t * cmd.y;
+                } else {
+                  snapX = glyphPos.x; snapY = glyphPos.y;
+                }
+                setPenSegmentSnap({ x: snapX, y: snapY });
+              } else {
+                setPenSegmentSnap(null);
+              }
+            } else {
+              setPenSegmentSnap(null);
+            }
+          } else {
+            setPenSegmentSnap(null);
+          }
         }
       }
 
@@ -2021,19 +2382,69 @@ export const GlyphEditor: React.FC<GlyphEditorProps> = ({
         const newCommands = commands.map((cmd) => ({ ...cmd }));
         const updatedPoints: EditablePoint[] = [];
 
+        // Mirror drag: Alt + drag with 2+ on-curve endpoints spreads/contracts
+        // points symmetrically around their centroid.
+        // Each point's delta sign is based on which side of the centroid it's on,
+        // so dragging right spreads horizontally, dragging left contracts.
+        // Hold Shift to constrain movement along the axis between the points.
+        const onCurveEndpoints = selectedPoints.filter(p => p.field === 'end' && p.isOnCurve);
+        const mirrorDrag = e.altKey && onCurveEndpoints.length >= 2;
+
+        let centroidX = 0;
+        let centroidY = 0;
+        let mirrorDx = dx;
+        let mirrorDy = dy;
+        if (mirrorDrag) {
+          for (const ep of onCurveEndpoints) {
+            centroidX += ep.x;
+            centroidY += ep.y;
+          }
+          centroidX /= onCurveEndpoints.length;
+          centroidY /= onCurveEndpoints.length;
+
+          // Shift: constrain drag to the axis between the points
+          if (e.shiftKey && onCurveEndpoints.length === 2) {
+            const axX = onCurveEndpoints[1].x - onCurveEndpoints[0].x;
+            const axY = onCurveEndpoints[1].y - onCurveEndpoints[0].y;
+            const axLen = Math.sqrt(axX * axX + axY * axY);
+            if (axLen > 0) {
+              const nx = axX / axLen;
+              const ny = axY / axLen;
+              const proj = dx * nx + dy * ny;
+              mirrorDx = Math.round(proj * nx);
+              mirrorDy = Math.round(proj * ny);
+            }
+          } else if (e.shiftKey) {
+            // 3+ points: constrain to nearest 45° axis
+            if (Math.abs(dx) > Math.abs(dy)) mirrorDy = 0;
+            else mirrorDx = 0;
+          }
+        }
+
         for (const pt of selectedPoints) {
           const cmd = { ...newCommands[pt.commandIndex] };
+
+          let ptDx = dx;
+          let ptDy = dy;
+
+          if (mirrorDrag && pt.field === 'end' && pt.isOnCurve) {
+            const sx = Math.sign(pt.x - centroidX) || 1;
+            const sy = Math.sign(pt.y - centroidY) || 1;
+            ptDx = mirrorDx * sx;
+            ptDy = mirrorDy * sy;
+          }
+
           if (pt.field === 'end' && cmd.x !== undefined && cmd.y !== undefined) {
-            cmd.x += dx;
-            cmd.y += dy;
+            cmd.x += ptDx;
+            cmd.y += ptDy;
             updatedPoints.push({ ...pt, x: cmd.x, y: cmd.y });
           } else if (pt.field === 'cp1' && cmd.x1 !== undefined && cmd.y1 !== undefined) {
-            cmd.x1 += dx;
-            cmd.y1 += dy;
+            cmd.x1 += ptDx;
+            cmd.y1 += ptDy;
             updatedPoints.push({ ...pt, x: cmd.x1, y: cmd.y1 });
           } else if (pt.field === 'cp2' && cmd.x2 !== undefined && cmd.y2 !== undefined) {
-            cmd.x2 += dx;
-            cmd.y2 += dy;
+            cmd.x2 += ptDx;
+            cmd.y2 += ptDy;
             updatedPoints.push({ ...pt, x: cmd.x2, y: cmd.y2 });
           } else {
             updatedPoints.push(pt);
@@ -2127,7 +2538,7 @@ export const GlyphEditor: React.FC<GlyphEditorProps> = ({
       const hit = findPointAtScreenPos(points, pos.x, pos.y, mapper.glyphToScreen);
       setHoveredPoint(hit);
     },
-    [getCanvasPos, getMapper, commands, isPanning, isDragging, isMarquee, marqueeStart, selectedPoints, onCommandsChange, onPanChange, onSelectedPointsChange, snapToGrid, cornerPoints, activeTool, constrainToAxis, onSetCornerPoints, shapeDragStart, sliceDragStart, selectedContours, onDragStart, onSelectedContoursChange, onMoveInstance],
+    [getCanvasPos, getMapper, commands, isPanning, isDragging, isMarquee, marqueeStart, selectedPoints, onCommandsChange, onPanChange, onSelectedPointsChange, snapToGrid, cornerPoints, activeTool, constrainToAxis, onSetCornerPoints, shapeDragStart, sliceDragStart, selectedContours, onDragStart, onSelectedContoursChange, onMoveInstance, computeSnapGuides, glyph],
   );
 
   const KAPPA = 0.5522847498;
@@ -2313,6 +2724,7 @@ export const GlyphEditor: React.FC<GlyphEditorProps> = ({
         }
 
         setShapeToolDrag(null);
+        setSnapGuides([]);
         return;
       }
 
@@ -2429,6 +2841,7 @@ export const GlyphEditor: React.FC<GlyphEditorProps> = ({
     setMarqueeEnd(null);
     setCursorPos(null);
     setPenCursorGlyph(null);
+    setPenSegmentSnap(null);
     setPenDragState(null);
   }, []);
 

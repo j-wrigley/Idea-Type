@@ -95,7 +95,7 @@ export function getEditablePoints(commands: PathCommand[]): EditablePoint[] {
         field: 'end',
         x: cmd.x,
         y: cmd.y,
-        isOnCurve: cmd.type === 'M' || cmd.type === 'L',
+        isOnCurve: true,
       });
     }
   }
@@ -384,8 +384,9 @@ export function promoteSegment(
         break;
       }
     }
-    const mx = Math.round((prevX + cmd.x) / 2);
-    const my = Math.round((prevY + cmd.y) / 2);
+    // Place control point on the line at 1/2 so the shape doesn't change
+    const mx = Math.round(prevX + 0.5 * (cmd.x - prevX));
+    const my = Math.round(prevY + 0.5 * (cmd.y - prevY));
     result[commandIndex] = { type: 'Q', x1: mx, y1: my, x: cmd.x, y: cmd.y };
     return result;
   }
@@ -401,6 +402,7 @@ export function promoteSegment(
         break;
       }
     }
+    // Lossless Q->C conversion
     const cp1x = Math.round(prevX + (2 / 3) * (cmd.x1 - prevX));
     const cp1y = Math.round(prevY + (2 / 3) * (cmd.y1 - prevY));
     const cp2x = Math.round(cmd.x + (2 / 3) * (cmd.x1 - cmd.x));
@@ -420,8 +422,23 @@ export function demoteSegment(
   const result = [...commands];
 
   if (cmd.type === 'C' && cmd.x1 !== undefined && cmd.y1 !== undefined && cmd.x2 !== undefined && cmd.y2 !== undefined && cmd.x !== undefined && cmd.y !== undefined) {
-    const cpX = Math.round((cmd.x1 + cmd.x2) / 2);
-    const cpY = Math.round((cmd.y1 + cmd.y2) / 2);
+    let prevX = 0, prevY = 0;
+    for (let i = commandIndex - 1; i >= 0; i--) {
+      const c = commands[i];
+      if (c.x !== undefined && c.y !== undefined) {
+        prevX = c.x; prevY = c.y;
+        break;
+      }
+    }
+    // Best-fit quadratic control point from cubic:
+    // The cubic's midpoint at t=0.5 should match the quadratic's midpoint at t=0.5.
+    // Q(0.5) = 0.25*P0 + 0.5*CP + 0.25*P3
+    // C(0.5) = 0.125*P0 + 0.375*CP1 + 0.375*CP2 + 0.125*P3
+    // Solving: CP = 0.75*(CP1 + CP2) - 0.25*(P0 + P3) ... but simpler:
+    // use the standard 3/4 rule: CP = (3*CP1 + 3*CP2 - P0 - P3) / 4
+    // which minimizes the max deviation for most curves.
+    const cpX = Math.round((3 * cmd.x1 + 3 * cmd.x2 - prevX - cmd.x) / 4);
+    const cpY = Math.round((3 * cmd.y1 + 3 * cmd.y2 - prevY - cmd.y) / 4);
     result[commandIndex] = { type: 'Q', x1: cpX, y1: cpY, x: cmd.x, y: cmd.y };
     return result;
   }
