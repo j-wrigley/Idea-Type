@@ -141,6 +141,7 @@ declare global {
     electronAPI: {
       openFontFile: () => Promise<{ buffer: ArrayBuffer; fileName: string } | null>;
       saveFontFile: (arrayBuffer: ArrayBuffer, defaultName: string) => Promise<boolean>;
+      readClipboard: () => { html: string; text: string };
     };
   }
 }

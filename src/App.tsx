@@ -13,6 +13,7 @@ import { TextPreview } from './components/TextPreview';
 import { KerningPanel } from './components/KerningPanel';
 import { ExportDialog, type ExportMetadata } from './components/ExportDialog';
 import { cloneCommands, removeDuplicatePoints, applyTransform, applyDesignTools, getContourRanges, reverseContour, reverseContours, makeContourCutout, makeContourFill, makeIndent, extractContours, removeContours, translateContourCommands, flipContourCommands, scaleContourCommands, getContourBounds, breakSegment } from './utils/pathTransforms';
+import { parseSvgFromClipboard, fitToGlyphSpace } from './utils/svgPaste';
 import { optimizeOutlines } from './utils/outlineOptimizer';
 import { slicePathWithLine } from './utils/slicePath';
 import { exportFont } from './utils/fontExport';
@@ -997,6 +998,29 @@ export default function App() {
     setSelectedPoints(updated);
   }, [commands, selectedPoints, history]);
 
+  const pasteFromInternalClipboard = useCallback(() => {
+    if (activeTool === 'shape' && contourClipboardRef.current) {
+      history.pushState(commands);
+      const pasted = cloneCommands(contourClipboardRef.current);
+      const offset = translateContourCommands(
+        pasted,
+        Array.from({ length: getContourRanges(pasted).length }, (_, i) => i),
+        20, 20,
+      );
+      const newCmds = [...commands, ...offset];
+      setCommands(newCmds);
+      const ranges = getContourRanges(newCmds);
+      const pastedRanges = getContourRanges(offset);
+      const newIndices = Array.from({ length: pastedRanges.length }, (_, i) => ranges.length - pastedRanges.length + i);
+      setSelectedContours(newIndices);
+    } else if (clipboardRef.current) {
+      history.pushState(commands);
+      setCommands(cloneCommands(clipboardRef.current));
+      setTransform(DEFAULT_TRANSFORM);
+      setSelectedPoints([]);
+    }
+  }, [commands, history, activeTool]);
+
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       const target = e.target as HTMLElement;
@@ -1034,26 +1058,30 @@ export default function App() {
       }
       if (e.metaKey && e.key === 'v') {
         e.preventDefault();
-        if (activeTool === 'shape' && contourClipboardRef.current) {
-          history.pushState(commands);
-          const pasted = cloneCommands(contourClipboardRef.current);
-          const offset = translateContourCommands(
-            pasted,
-            Array.from({ length: getContourRanges(pasted).length }, (_, i) => i),
-            20, 20,
-          );
-          const newCmds = [...commands, ...offset];
-          setCommands(newCmds);
-          const ranges = getContourRanges(newCmds);
-          const pastedRanges = getContourRanges(offset);
-          const newIndices = Array.from({ length: pastedRanges.length }, (_, i) => ranges.length - pastedRanges.length + i);
-          setSelectedContours(newIndices);
-        } else if (clipboardRef.current) {
-          history.pushState(commands);
-          setCommands(cloneCommands(clipboardRef.current));
-          setTransform(DEFAULT_TRANSFORM);
-          setSelectedPoints([]);
+        // Read system clipboard via Electron's native clipboard module
+        try {
+          const { html, text } = window.electronAPI.readClipboard();
+          const svgCommands = parseSvgFromClipboard(html, text);
+          if (svgCommands && svgCommands.length > 0 && fontState.font) {
+            const fitted = fitToGlyphSpace(svgCommands, fontState.font.unitsPerEm, fontState.font.ascender);
+            history.pushState(commands);
+            const newCmds = [...commands, ...fitted];
+            setCommands(newCmds);
+            const existingRanges = getContourRanges(commands);
+            const pastedRanges = getContourRanges(fitted);
+            const newIndices = Array.from(
+              { length: pastedRanges.length },
+              (_, i) => existingRanges.length + i,
+            );
+            setSelectedContours(newIndices);
+            setSelectedPoints([]);
+            setActiveTool('shape');
+            return;
+          }
+        } catch {
+          // electronAPI not available (e.g. running in browser)
         }
+        pasteFromInternalClipboard();
         return;
       }
       if (e.metaKey && e.key === 'd') {
@@ -1204,7 +1232,40 @@ export default function App() {
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [handleUndo, handleRedo, handleSelectAll, handleSave, loadFont, handleDeletePoints, handleNudge, handleNudgeContours, handleScaleContours, cycleGlyph, handleSetPointType, commands, history, handleReverseContour, handleFlipContour, activeTool, selectedContours, editingComponentId, commitComponentEdit, setSelectedComponentId]);
+  }, [handleUndo, handleRedo, handleSelectAll, handleSave, loadFont, handleDeletePoints, handleNudge, handleNudgeContours, handleScaleContours, cycleGlyph, handleSetPointType, commands, history, handleReverseContour, handleFlipContour, activeTool, selectedContours, editingComponentId, commitComponentEdit, setSelectedComponentId, pasteFromInternalClipboard, fontState.font]);
+
+  useEffect(() => {
+    const handlePaste = (e: ClipboardEvent) => {
+      const target = e.target as HTMLElement;
+      if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.tagName === 'SELECT') return;
+      e.preventDefault();
+
+      const html = e.clipboardData?.getData('text/html') ?? '';
+      const text = e.clipboardData?.getData('text/plain') ?? '';
+      const svgCommands = parseSvgFromClipboard(html, text);
+
+      if (svgCommands && svgCommands.length > 0 && fontState.font) {
+        const fitted = fitToGlyphSpace(svgCommands, fontState.font.unitsPerEm, fontState.font.ascender);
+        history.pushState(commands);
+        const newCmds = [...commands, ...fitted];
+        setCommands(newCmds);
+        const existingRanges = getContourRanges(commands);
+        const pastedRanges = getContourRanges(fitted);
+        const newIndices = Array.from(
+          { length: pastedRanges.length },
+          (_, i) => existingRanges.length + i,
+        );
+        setSelectedContours(newIndices);
+        setSelectedPoints([]);
+        setActiveTool('shape');
+        return;
+      }
+
+      pasteFromInternalClipboard();
+    };
+    document.addEventListener('paste', handlePaste);
+    return () => document.removeEventListener('paste', handlePaste);
+  }, [commands, history, fontState.font, activeTool, pasteFromInternalClipboard]);
 
   if (!fontState.font) {
     return <FontUploader onFontLoaded={loadFontFromBuffer} onOpenDialog={loadFont} onCreateNew={createNewFont} />;
