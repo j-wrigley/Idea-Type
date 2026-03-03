@@ -1,9 +1,9 @@
 import React, { useCallback, useEffect, useState, useMemo, useRef, KeyboardEvent as ReactKeyboardEvent } from 'react';
 import type { Font, Glyph } from 'opentype.js';
 import type { Theme } from '../App';
-import type { ComponentDef } from '../types';
+import type { ComponentDef, SegmentDef } from '../types';
 
-type SidebarMode = 'glyphs' | 'components';
+type SidebarMode = 'glyphs' | 'components' | 'segments';
 
 interface GlyphGridProps {
   font: Font;
@@ -23,6 +23,9 @@ interface GlyphGridProps {
   onRemoveComponent?: (id: string) => void;
   onRenameComponent?: (id: string, newName: string) => void;
   onInsertComponent?: (componentId: string) => void;
+  segments?: SegmentDef[];
+  onRemoveSegment?: (id: string) => void;
+  onRenameSegment?: (id: string, newName: string) => void;
 }
 
 type GlyphTab = 'all' | 'basic' | 'extended' | 'numbers' | 'other';
@@ -282,6 +285,176 @@ const ComponentCell: React.FC<{
   );
 });
 
+const CATEGORY_COLORS: Record<string, string> = {
+  'ink-trap': '#ff6b6b',
+  'serif': '#4dabf7',
+  'terminal': '#69db7c',
+  'decorative': '#da77f2',
+  'custom': '#868e96',
+};
+
+const SegmentCell: React.FC<{
+  seg: SegmentDef;
+  onRename?: (id: string, newName: string) => void;
+  onRemove?: (id: string) => void;
+  theme: Theme;
+}> = React.memo(({ seg, onRename, onRemove, theme }) => {
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const [isEditing, setIsEditing] = useState(false);
+  const [editValue, setEditValue] = useState('');
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+
+    const dpr = window.devicePixelRatio || 1;
+    const w = CELL_SIZE, h = CELL_SIZE;
+    canvas.width = w * dpr;
+    canvas.height = h * dpr;
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.save();
+    ctx.scale(dpr, dpr);
+
+    const bgColor = theme === 'dark' ? '#111111' : '#eaeaea';
+    const strokeColor = CATEGORY_COLORS[seg.category] || '#868e96';
+
+    ctx.fillStyle = bgColor;
+    ctx.fillRect(0, 0, w, h);
+
+    if (seg.commands.length < 2) { ctx.restore(); return; }
+
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    for (const cmd of seg.commands) {
+      if (cmd.x !== undefined && cmd.y !== undefined) {
+        if (cmd.x < minX) minX = cmd.x;
+        if (cmd.x > maxX) maxX = cmd.x;
+        if (cmd.y < minY) minY = cmd.y;
+        if (cmd.y > maxY) maxY = cmd.y;
+      }
+      if (cmd.x1 !== undefined && cmd.y1 !== undefined) {
+        if (cmd.x1 < minX) minX = cmd.x1;
+        if (cmd.x1 > maxX) maxX = cmd.x1;
+        if (cmd.y1 < minY) minY = cmd.y1;
+        if (cmd.y1 > maxY) maxY = cmd.y1;
+      }
+      if (cmd.x2 !== undefined && cmd.y2 !== undefined) {
+        if (cmd.x2 < minX) minX = cmd.x2;
+        if (cmd.x2 > maxX) maxX = cmd.x2;
+        if (cmd.y2 < minY) minY = cmd.y2;
+        if (cmd.y2 > maxY) maxY = cmd.y2;
+      }
+    }
+    if (!isFinite(minX)) { ctx.restore(); return; }
+
+    const bw = maxX - minX || 1;
+    const bh = maxY - minY || 1;
+    const margin = 10;
+    const scale = Math.min((w - margin * 2) / bw, (h - margin * 2) / bh);
+    const ox = (w - bw * scale) / 2 - minX * scale;
+    const oy = (h - bh * scale) / 2 - minY * scale;
+    const flipY = (gx: number, gy: number) => ({ x: gx * scale + ox, y: h - (gy * scale + oy) });
+
+    ctx.strokeStyle = strokeColor;
+    ctx.lineWidth = 2.5;
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    ctx.beginPath();
+    for (const cmd of seg.commands) {
+      if (cmd.type === 'M' && cmd.x !== undefined && cmd.y !== undefined) {
+        const p = flipY(cmd.x, cmd.y);
+        ctx.moveTo(p.x, p.y);
+      } else if (cmd.type === 'L' && cmd.x !== undefined && cmd.y !== undefined) {
+        const p = flipY(cmd.x, cmd.y);
+        ctx.lineTo(p.x, p.y);
+      } else if (cmd.type === 'C') {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const c = cmd as any;
+        const p1 = flipY(c.x1, c.y1);
+        const p2 = flipY(c.x2, c.y2);
+        const pe = flipY(c.x, c.y);
+        ctx.bezierCurveTo(p1.x, p1.y, p2.x, p2.y, pe.x, pe.y);
+      } else if (cmd.type === 'Q') {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const c = cmd as any;
+        const p1 = flipY(c.x1, c.y1);
+        const pe = flipY(c.x, c.y);
+        ctx.quadraticCurveTo(p1.x, p1.y, pe.x, pe.y);
+      }
+    }
+    ctx.stroke();
+
+    // Draw start/end dots
+    const first = seg.commands[0];
+    const last = seg.commands[seg.commands.length - 1];
+    if (first.x !== undefined && first.y !== undefined) {
+      const p = flipY(first.x, first.y);
+      ctx.fillStyle = '#4caf50';
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, 3, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    if (last.x !== undefined && last.y !== undefined) {
+      const p = flipY(last.x, last.y);
+      ctx.fillStyle = '#f44336';
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, 3, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    ctx.restore();
+  }, [seg, theme]);
+
+  const handleDoubleClickLabel = useCallback((e: React.MouseEvent) => {
+    e.stopPropagation();
+    setEditValue(seg.name);
+    setIsEditing(true);
+  }, [seg.name]);
+
+  const commitRename = useCallback(() => {
+    setIsEditing(false);
+    if (editValue && editValue !== seg.name && onRename) {
+      onRename(seg.id, editValue);
+    }
+  }, [editValue, seg.name, seg.id, onRename]);
+
+  return (
+    <div
+      className="glyph-cell segment-cell"
+      title={`${seg.name} (${seg.category})${seg.builtin ? ' — Built-in' : ''}\nSelect 2+ on-curve points then right-click → Apply Segment`}
+    >
+      <canvas ref={canvasRef} />
+      {!seg.builtin && onRemove && (
+        <button
+          className="seg-remove-btn"
+          title="Remove segment"
+          onClick={(e) => { e.stopPropagation(); onRemove(seg.id); }}
+        >&times;</button>
+      )}
+      <div className="segment-label-row">
+        <span
+          className="seg-category-dot"
+          style={{ background: CATEGORY_COLORS[seg.category] || '#868e96' }}
+        />
+        {isEditing ? (
+          <input
+            className="glyph-rename-input"
+            value={editValue}
+            onChange={(e) => setEditValue(e.target.value)}
+            onBlur={commitRename}
+            onKeyDown={(e) => { if (e.key === 'Enter') commitRename(); if (e.key === 'Escape') setIsEditing(false); }}
+            autoFocus
+            onClick={(e) => e.stopPropagation()}
+          />
+        ) : (
+          <span className="glyph-label" onDoubleClick={handleDoubleClickLabel}>{seg.name}</span>
+        )}
+      </div>
+    </div>
+  );
+});
+
 export const GlyphGrid: React.FC<GlyphGridProps> = ({
   font,
   selectedIndex,
@@ -300,6 +473,9 @@ export const GlyphGrid: React.FC<GlyphGridProps> = ({
   onRemoveComponent,
   onRenameComponent,
   onInsertComponent,
+  segments = [],
+  onRemoveSegment,
+  onRenameSegment,
 }) => {
   const [sidebarMode, setSidebarMode] = useState<SidebarMode>('glyphs');
   const [filter, setFilter] = useState('');
@@ -404,9 +580,37 @@ export const GlyphGrid: React.FC<GlyphGridProps> = ({
           className={`sidebar-mode-tab ${sidebarMode === 'components' ? 'active' : ''}`}
           onClick={() => setSidebarMode('components')}
         >Components <span className="tab-count">{components.length}</span></button>
+        <button
+          className={`sidebar-mode-tab ${sidebarMode === 'segments' ? 'active' : ''}`}
+          onClick={() => setSidebarMode('segments')}
+        >Segments <span className="tab-count">{segments.length}</span></button>
       </div>
 
-      {sidebarMode === 'glyphs' ? (
+      {sidebarMode === 'segments' ? (
+        <>
+          <div className="glyph-sidebar-header">
+            <div className="glyph-sidebar-actions">
+              <span className="glyph-count">{segments.length} segments</span>
+            </div>
+          </div>
+          <div className="glyph-grid segment-grid">
+            {segments.map((seg) => (
+              <SegmentCell
+                key={seg.id}
+                seg={seg}
+                onRename={onRenameSegment}
+                onRemove={onRemoveSegment}
+                theme={theme}
+              />
+            ))}
+            {segments.length === 0 && (
+              <div className="comp-empty-msg">
+                No segments yet. Select 2+ on-curve points in the editor, right-click, and choose &ldquo;Save Selection as Segment&rdquo;.
+              </div>
+            )}
+          </div>
+        </>
+      ) : sidebarMode === 'glyphs' ? (
         <>
           <div className="glyph-sidebar-header">
             <div className="glyph-tabs">

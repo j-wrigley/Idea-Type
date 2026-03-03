@@ -21,6 +21,7 @@ Built with React, TypeScript, Electron, and HTML5 Canvas.
 ### Install
 
 ```bash
+cd font-vector-editor
 npm install
 ```
 
@@ -244,7 +245,7 @@ Full history system with `Cmd+Z` to undo and `Cmd+Shift+Z` to redo. Per-glyph hi
 ## Project Structure
 
 ```
-Idea-Type /
+font-vector-editor/
 ├── electron/              # Electron main process and preload
 │   ├── main.ts
 │   └── preload.ts

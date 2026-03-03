@@ -133,6 +133,14 @@ export interface ComponentInstance {
 
 export type GlyphComponents = Record<number, ComponentInstance[]>;
 
+export interface SegmentDef {
+  id: string;
+  name: string;
+  commands: PathCommand[];
+  category: 'ink-trap' | 'serif' | 'terminal' | 'decorative' | 'custom';
+  builtin?: boolean;
+}
+
 export type EditorTool = 'select' | 'pen' | 'rect' | 'ellipse' | 'shape' | 'slice';
 export type SidebarTab = 'transform' | 'kerning';
 
