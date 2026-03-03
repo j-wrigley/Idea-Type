@@ -3,6 +3,7 @@ import opentype, { type PathCommand } from 'opentype.js';
 import { useFont } from './hooks/useFont';
 import { useHistory } from './hooks/useHistory';
 import { useComponents } from './hooks/useComponents';
+import { useSegments } from './hooks/useSegments';
 import { FontUploader } from './components/FontUploader';
 import { GlyphGrid } from './components/GlyphGrid';
 import { GlyphEditor } from './components/GlyphEditor';
@@ -18,8 +19,9 @@ import { optimizeOutlines } from './utils/outlineOptimizer';
 import { slicePathWithLine } from './utils/slicePath';
 import { exportFont } from './utils/fontExport';
 import { getEditablePoints, deletePoints, splitSegmentAtT, convertSegmentToType } from './utils/hitTesting';
+import { applySegmentToPath, createSegmentFromCommands } from './utils/segmentFitting';
 import { DEFAULT_TRANSFORM, DEFAULT_GRID, isDefaultTransform, createDefaultMetrics } from './types';
-import type { TransformValues, EditablePoint, GridSettings, EditorTool, SidebarTab, MetricLine } from './types';
+import type { TransformValues, EditablePoint, GridSettings, EditorTool, SidebarTab, MetricLine, SegmentDef } from './types';
 import './App.css';
 
 export type Theme = 'dark' | 'light';
@@ -68,6 +70,14 @@ export default function App() {
     decomposeInstance,
     getComponent,
   } = useComponents();
+
+  const {
+    segments: segmentLibrary,
+    addSegment,
+    removeSegment,
+    renameSegment,
+    getSegment,
+  } = useSegments();
 
   const [editingComponentId, setEditingComponentId] = useState<string | null>(null);
   const glyphOwnCommandsRef = useRef<Record<number, PathCommand[]>>({});
@@ -754,6 +764,71 @@ export default function App() {
     [editingComponentId, commitComponentEdit, setSelectedComponentId, handleSelectGlyph],
   );
 
+  // --- Segment handlers ---
+
+  const handleCreateSegmentFromSelection = useCallback(() => {
+    const onCurve = selectedPoints.filter(p => p.isOnCurve);
+    if (onCurve.length < 2) return;
+
+    const sorted = [...onCurve].sort((a, b) => a.commandIndex - b.commandIndex);
+    const startIdx = sorted[0].commandIndex;
+    const endIdx = sorted[sorted.length - 1].commandIndex;
+
+    const segCmds: PathCommand[] = [];
+    for (let i = startIdx; i <= endIdx; i++) {
+      segCmds.push({ ...commands[i] });
+    }
+
+    const result = createSegmentFromCommands(
+      `Segment ${segmentLibrary.length + 1}`,
+      segCmds,
+      'custom',
+    );
+    if (result) {
+      addSegment(result.name, result.commands, result.category);
+    }
+  }, [selectedPoints, commands, segmentLibrary.length, addSegment]);
+
+  const handleApplySegment = useCallback((segmentId: string, flip = false) => {
+    const segDef = getSegment(segmentId);
+    if (!segDef) return;
+
+    const onCurve = selectedPoints.filter(p => p.isOnCurve);
+    if (onCurve.length === 0) return;
+
+    const sorted = [...onCurve].sort((a, b) => a.commandIndex - b.commandIndex);
+    const startIdx = sorted[0].commandIndex;
+    let endIdx = sorted.length >= 2
+      ? sorted[sorted.length - 1].commandIndex
+      : -1;
+
+    // Single point: find the next on-curve point in the same contour
+    if (endIdx === -1) {
+      const ranges = getContourRanges(commands);
+      const contour = ranges.find(r => startIdx >= r.start && startIdx <= r.end);
+      if (contour) {
+        for (let i = startIdx + 1; i <= contour.end; i++) {
+          const cmd = commands[i];
+          if (cmd.type === 'Z') break;
+          if (cmd.x !== undefined && cmd.y !== undefined &&
+              (cmd.type === 'M' || cmd.type === 'L' ||
+               cmd.type === 'Q' || cmd.type === 'C')) {
+            endIdx = i;
+            break;
+          }
+        }
+      }
+      if (endIdx === -1) return;
+    }
+
+    const newCmds = applySegmentToPath(commands, startIdx, endIdx, segDef, flip);
+    if (newCmds) {
+      history.pushState(commands);
+      setCommands(newCmds);
+      setSelectedPoints([]);
+    }
+  }, [selectedPoints, commands, history, getSegment]);
+
   const handleSelectAll = useCallback(() => {
     const pts = getEditablePoints(displayCommands);
     setSelectedPoints(pts);
@@ -1322,6 +1397,9 @@ export default function App() {
           onRemoveComponent={removeComponent}
           onRenameComponent={renameComponent}
           onInsertComponent={handleInsertComponentFromSidebar}
+          segments={segmentLibrary}
+          onRemoveSegment={removeSegment}
+          onRenameSegment={renameSegment}
         />
         <div className="editor-area">
           {editingComponentId && (
@@ -1381,6 +1459,10 @@ export default function App() {
                 onMakeCutout={handleMakeCutout}
                 onMakeFill={handleMakeFill}
                 onMakeIndent={handleMakeIndent}
+                availableSegments={segmentLibrary.map(s => ({ id: s.id, name: s.name, category: s.category }))}
+                segmentDefs={segmentLibrary}
+                onCreateSegmentFromSelection={handleCreateSegmentFromSelection}
+                onApplySegment={handleApplySegment}
               />
               <div className="info-button-container">
                 <button

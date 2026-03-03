@@ -22,6 +22,8 @@ import {
   rotateContourCommands,
   isContourClockwise,
 } from '../utils/pathTransforms';
+import { fitSegmentBetweenPoints } from '../utils/segmentFitting';
+import type { SegmentDef } from '../types';
 
 interface GlyphEditorProps {
   commands: PathCommand[];
@@ -64,6 +66,10 @@ interface GlyphEditorProps {
   onMakeCutout?: () => void;
   onMakeFill?: () => void;
   onMakeIndent?: () => void;
+  availableSegments?: { id: string; name: string; category: string }[];
+  segmentDefs?: SegmentDef[];
+  onCreateSegmentFromSelection?: () => void;
+  onApplySegment?: (segmentId: string, flip?: boolean) => void;
 }
 
 const DARK_COLORS = {
@@ -198,6 +204,10 @@ export const GlyphEditor: React.FC<GlyphEditorProps> = ({
   onMakeCutout,
   onMakeFill,
   onMakeIndent,
+  availableSegments = [],
+  segmentDefs = [],
+  onCreateSegmentFromSelection,
+  onApplySegment,
 }) => {
   const COLORS = useMemo(() => theme === 'dark' ? DARK_COLORS : LIGHT_COLORS, [theme]);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -241,6 +251,9 @@ export const GlyphEditor: React.FC<GlyphEditorProps> = ({
     instanceIndex: number | null;
     segmentCommandIndex: number | null;
   } | null>(null);
+
+  const [hoveredSegmentId, setHoveredSegmentId] = useState<string | null>(null);
+  const [segmentFlipAlt, setSegmentFlipAlt] = useState(false);
 
   const [shapeToolDrag, setShapeToolDrag] = useState<{
     startGlyph: { x: number; y: number };
@@ -1627,7 +1640,69 @@ export const GlyphEditor: React.FC<GlyphEditorProps> = ({
         ctx.fillText(`${selectedPoints.length} points selected${hint}`, 12, height - 12);
       }
     }
-  }, [commands, canvasSize, font, glyph, zoom, panX, panY, hoveredPoint, selectedSet, selectedPoints, getMapper, COLORS, gridSettings, showRulers, showPathDirection, isMarquee, marqueeStart, marqueeEnd, cursorPos, cornerPoints, activeTool, penCursorGlyph, penSegmentSnap, penDragState, showFill, theme, contextGlyphs, metricLines, shapeDragStart, shapeDragCurrent, sliceDragStart, sliceDragCurrent, selectedContours, shapeToolDrag, componentInstances, snapGuides]);
+
+    // Segment preview ghost
+    if (hoveredSegmentId && segmentDefs.length > 0) {
+      const segDef = segmentDefs.find(s => s.id === hoveredSegmentId);
+      if (segDef) {
+        const onCurve = selectedPoints.filter(p => p.isOnCurve);
+        if (onCurve.length >= 1) {
+          const sorted = [...onCurve].sort((a, b) => a.commandIndex - b.commandIndex);
+          const startPt = sorted[0];
+          let endPt = sorted.length >= 2 ? sorted[sorted.length - 1] : null;
+
+          // Single point: find next on-curve point in same contour
+          if (!endPt) {
+            const ranges = getContourRanges(commands);
+            const contour = ranges.find(r => startPt.commandIndex >= r.start && startPt.commandIndex <= r.end);
+            if (contour) {
+              for (let i = startPt.commandIndex + 1; i <= contour.end; i++) {
+                const c = commands[i];
+                if (c.type === 'Z') break;
+                if (c.x !== undefined && c.y !== undefined) {
+                  endPt = { x: c.x, y: c.y, commandIndex: i, field: 'end' as const, isOnCurve: true };
+                  break;
+                }
+              }
+            }
+          }
+
+          if (endPt) {
+            const fitted = fitSegmentBetweenPoints(segDef, startPt, endPt, segmentFlipAlt);
+            if (fitted.length > 0) {
+              ctx.save();
+              ctx.strokeStyle = segmentFlipAlt ? 'rgba(255, 140, 0, 0.85)' : 'rgba(0, 180, 255, 0.8)';
+              ctx.lineWidth = 2.5;
+              ctx.setLineDash([6, 4]);
+
+              const sp = mapper.glyphToScreen(startPt.x, startPt.y);
+              ctx.beginPath();
+              ctx.moveTo(sp.x, sp.y);
+
+              for (const cmd of fitted) {
+                if (cmd.type === 'L' && cmd.x !== undefined && cmd.y !== undefined) {
+                  const p = mapper.glyphToScreen(cmd.x, cmd.y);
+                  ctx.lineTo(p.x, p.y);
+                } else if (cmd.type === 'C' && cmd.x1 !== undefined && cmd.y1 !== undefined && cmd.x2 !== undefined && cmd.y2 !== undefined && cmd.x !== undefined && cmd.y !== undefined) {
+                  const p1 = mapper.glyphToScreen(cmd.x1, cmd.y1);
+                  const p2 = mapper.glyphToScreen(cmd.x2, cmd.y2);
+                  const pe = mapper.glyphToScreen(cmd.x, cmd.y);
+                  ctx.bezierCurveTo(p1.x, p1.y, p2.x, p2.y, pe.x, pe.y);
+                } else if (cmd.type === 'Q' && cmd.x1 !== undefined && cmd.y1 !== undefined && cmd.x !== undefined && cmd.y !== undefined) {
+                  const p1 = mapper.glyphToScreen(cmd.x1, cmd.y1);
+                  const pe = mapper.glyphToScreen(cmd.x, cmd.y);
+                  ctx.quadraticCurveTo(p1.x, p1.y, pe.x, pe.y);
+                }
+              }
+              ctx.stroke();
+              ctx.setLineDash([]);
+              ctx.restore();
+            }
+          }
+        }
+      }
+    }
+  }, [commands, canvasSize, font, glyph, zoom, panX, panY, hoveredPoint, selectedSet, selectedPoints, getMapper, COLORS, gridSettings, showRulers, showPathDirection, isMarquee, marqueeStart, marqueeEnd, cursorPos, cornerPoints, activeTool, penCursorGlyph, penSegmentSnap, penDragState, showFill, theme, contextGlyphs, metricLines, shapeDragStart, shapeDragCurrent, sliceDragStart, sliceDragCurrent, selectedContours, shapeToolDrag, componentInstances, snapGuides, hoveredSegmentId, segmentDefs, segmentFlipAlt]);
 
   const getCanvasPos = useCallback(
     (e: React.MouseEvent): { x: number; y: number } => {
@@ -3043,7 +3118,43 @@ export const GlyphEditor: React.FC<GlyphEditorProps> = ({
     [getMapper, componentInstances, selectedContours, selectedPoints, commands, canvasSize],
   );
 
-  const closeContextMenu = useCallback(() => setContextMenu(null), []);
+  const closeContextMenu = useCallback(() => { setContextMenu(null); setHoveredSegmentId(null); setSegmentFlipAlt(false); }, []);
+
+  useEffect(() => {
+    if (!contextMenu) return;
+    const onKey = (e: KeyboardEvent) => setSegmentFlipAlt(e.altKey);
+    window.addEventListener('keydown', onKey);
+    window.addEventListener('keyup', onKey);
+    return () => {
+      window.removeEventListener('keydown', onKey);
+      window.removeEventListener('keyup', onKey);
+    };
+  }, [contextMenu]);
+
+  const contextMenuRef = useCallback((node: HTMLDivElement | null) => {
+    if (!node || !contextMenu || !containerRef.current) return;
+    const container = containerRef.current.getBoundingClientRect();
+    const menu = node.getBoundingClientRect();
+    const pad = 8;
+
+    let adjustedX = contextMenu.x;
+    let adjustedY = contextMenu.y;
+
+    // If menu extends past the right edge, flip to the left of the cursor
+    if (contextMenu.x + menu.width > container.width - pad) {
+      adjustedX = Math.max(pad, contextMenu.x - menu.width);
+    }
+
+    // If menu extends past the bottom, move it up
+    if (contextMenu.y + menu.height > container.height - pad) {
+      adjustedY = Math.max(pad, container.height - menu.height - pad);
+    }
+
+    if (adjustedX !== contextMenu.x || adjustedY !== contextMenu.y) {
+      node.style.left = `${adjustedX}px`;
+      node.style.top = `${adjustedY}px`;
+    }
+  }, [contextMenu]);
 
   return (
     <div className="glyph-editor" ref={containerRef}>
@@ -3063,6 +3174,7 @@ export const GlyphEditor: React.FC<GlyphEditorProps> = ({
       />
       {contextMenu && (
         <div
+          ref={contextMenuRef}
           className="editor-context-menu"
           style={{ left: contextMenu.x, top: contextMenu.y }}
           onMouseDown={(e) => e.stopPropagation()}
@@ -3163,6 +3275,54 @@ export const GlyphEditor: React.FC<GlyphEditorProps> = ({
               No components yet
             </button>
           )}
+          {(() => {
+            const onCurveCount = selectedPoints.filter(p => p.isOnCurve).length;
+            const canApplySegment = onCurveCount >= 1;
+            const canCreateSegment = onCurveCount >= 2;
+            return (
+              <>
+                {(canApplySegment || availableSegments.length > 0) && <div className="ctx-menu-divider" />}
+                {canCreateSegment && onCreateSegmentFromSelection && (
+                  <button
+                    className="ctx-menu-item"
+                    onClick={() => {
+                      onCreateSegmentFromSelection();
+                      closeContextMenu();
+                    }}
+                  >Save Selection as Segment</button>
+                )}
+                {canApplySegment && onApplySegment && availableSegments.length > 0 && (
+                  <>
+                    <div className="ctx-menu-label">
+                      Apply Segment{segmentFlipAlt ? ' (flipped)' : ''}:
+                      {!segmentFlipAlt && <span className="ctx-menu-hint">Hold ⌥ to flip</span>}
+                    </div>
+                    {availableSegments.map(s => (
+                      <button
+                        key={s.id}
+                        className={`ctx-menu-item ctx-menu-segment-item${segmentFlipAlt ? ' seg-flipped' : ''}`}
+                        onMouseEnter={() => setHoveredSegmentId(s.id)}
+                        onMouseLeave={() => setHoveredSegmentId(null)}
+                        onClick={() => {
+                          setHoveredSegmentId(null);
+                          onApplySegment(s.id, segmentFlipAlt);
+                          closeContextMenu();
+                        }}
+                      >
+                        <span className="ctx-seg-name">{s.name}{segmentFlipAlt ? ' ↕' : ''}</span>
+                        <span className="ctx-seg-category">{s.category}</span>
+                      </button>
+                    ))}
+                  </>
+                )}
+                {canApplySegment && onApplySegment && availableSegments.length === 0 && (
+                  <button className="ctx-menu-item" disabled style={{ opacity: 0.5 }}>
+                    No segments yet
+                  </button>
+                )}
+              </>
+            );
+          })()}
           <button className="ctx-menu-item ctx-menu-cancel" onClick={closeContextMenu}>Cancel</button>
         </div>
       )}

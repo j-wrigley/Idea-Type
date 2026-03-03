@@ -356,6 +356,94 @@ html, body, #root {
   max-width: 80px;
 }
 
+/* Segment cells */
+.segment-cell {
+  position: relative;
+}
+
+.segment-cell canvas {
+  border-radius: 4px;
+}
+
+.seg-remove-btn {
+  position: absolute;
+  top: 3px;
+  right: 3px;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  border: none;
+  background: #e53935;
+  color: #fff;
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0;
+  transition: opacity 0.15s;
+  padding: 0;
+}
+
+.segment-cell:hover .seg-remove-btn {
+  opacity: 1;
+}
+
+.seg-remove-btn:hover {
+  background: #c62828;
+}
+
+.segment-label-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 16px;
+}
+
+.seg-category-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.ctx-seg-name {
+  flex: 1;
+}
+
+.ctx-seg-category {
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+  opacity: 0.5;
+  margin-left: 8px;
+}
+
+.ctx-menu-segment-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.ctx-menu-segment-item:hover {
+  background: rgba(0, 180, 255, 0.15) !important;
+}
+
+.ctx-menu-segment-item.seg-flipped:hover {
+  background: rgba(255, 140, 0, 0.15) !important;
+}
+
+.ctx-menu-hint {
+  float: right;
+  font-size: 9px;
+  font-weight: 400;
+  opacity: 0.5;
+  margin-left: 8px;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
 .glyph-sidebar-header {
   padding: 8px;
   border-bottom: 1px solid var(--border-subtle);
@@ -643,6 +731,8 @@ html, body, #root {
   position: absolute;
   z-index: 1000;
   min-width: 200px;
+  max-height: calc(100% - 16px);
+  overflow-y: auto;
   background: var(--bg-primary);
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
@@ -650,6 +740,19 @@ html, body, #root {
   padding: 4px 0;
   display: flex;
   flex-direction: column;
+}
+
+.editor-context-menu::-webkit-scrollbar {
+  width: 5px;
+}
+
+.editor-context-menu::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.editor-context-menu::-webkit-scrollbar-thumb {
+  background: var(--text-muted);
+  border-radius: 3px;
 }
 
 .ctx-menu-item {
