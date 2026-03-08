@@ -843,6 +843,454 @@ function buildAnchorGraph(commands: PathCommand[]): {
   return { anchorIndices, contourOfCmd, prevAnchor, nextAnchor };
 }
 
+function _lerp(a: number, b: number, t: number): number { return a + (b - a) * t; }
+
+function _splitCubic(
+  p0x: number, p0y: number, p1x: number, p1y: number,
+  p2x: number, p2y: number, p3x: number, p3y: number, t: number,
+) {
+  const q0x = _lerp(p0x, p1x, t), q0y = _lerp(p0y, p1y, t);
+  const q1x = _lerp(p1x, p2x, t), q1y = _lerp(p1y, p2y, t);
+  const q2x = _lerp(p2x, p3x, t), q2y = _lerp(p2y, p3y, t);
+  const r0x = _lerp(q0x, q1x, t), r0y = _lerp(q0y, q1y, t);
+  const r1x = _lerp(q1x, q2x, t), r1y = _lerp(q1y, q2y, t);
+  const sx = _lerp(r0x, r1x, t), sy = _lerp(r0y, r1y, t);
+  return {
+    first:  { x1: q0x, y1: q0y, x2: r0x, y2: r0y, x: sx, y: sy },
+    second: { x1: r1x, y1: r1y, x2: q2x, y2: q2y, x: p3x, y: p3y },
+  };
+}
+
+function _splitQuad(
+  p0x: number, p0y: number, p1x: number, p1y: number,
+  p2x: number, p2y: number, t: number,
+) {
+  const q0x = _lerp(p0x, p1x, t), q0y = _lerp(p0y, p1y, t);
+  const q1x = _lerp(p1x, p2x, t), q1y = _lerp(p1y, p2y, t);
+  const sx = _lerp(q0x, q1x, t), sy = _lerp(q0y, q1y, t);
+  return {
+    first:  { x1: q0x, y1: q0y, x: sx, y: sy },
+    second: { x1: q1x, y1: q1y, x: p2x, y: p2y },
+  };
+}
+
+/**
+ * Evaluate a cubic bezier at parameter t.
+ * Returns the point and the normalized tangent direction.
+ */
+function _evalCubic(
+  p0x: number, p0y: number, p1x: number, p1y: number,
+  p2x: number, p2y: number, p3x: number, p3y: number, t: number,
+) {
+  const u = 1 - t;
+  const x = u * u * u * p0x + 3 * u * u * t * p1x + 3 * u * t * t * p2x + t * t * t * p3x;
+  const y = u * u * u * p0y + 3 * u * u * t * p1y + 3 * u * t * t * p2y + t * t * t * p3y;
+  let tx = 3 * u * u * (p1x - p0x) + 6 * u * t * (p2x - p1x) + 3 * t * t * (p3x - p2x);
+  let ty = 3 * u * u * (p1y - p0y) + 6 * u * t * (p2y - p1y) + 3 * t * t * (p3y - p2y);
+  const len = Math.sqrt(tx * tx + ty * ty);
+  if (len > 1e-9) { tx /= len; ty /= len; } else { tx = 0; ty = 0; }
+  return { x, y, tx, ty };
+}
+
+/**
+ * Evaluate a quadratic bezier at parameter t.
+ */
+function _evalQuad(
+  p0x: number, p0y: number, p1x: number, p1y: number,
+  p2x: number, p2y: number, t: number,
+) {
+  const u = 1 - t;
+  const x = u * u * p0x + 2 * u * t * p1x + t * t * p2x;
+  const y = u * u * p0y + 2 * u * t * p1y + t * t * p2y;
+  let tx = 2 * u * (p1x - p0x) + 2 * t * (p2x - p1x);
+  let ty = 2 * u * (p1y - p0y) + 2 * t * (p2y - p1y);
+  const len = Math.sqrt(tx * tx + ty * ty);
+  if (len > 1e-9) { tx /= len; ty /= len; } else { tx = 0; ty = 0; }
+  return { x, y, tx, ty };
+}
+
+/**
+ * Approximate the arc-length of a cubic bezier using Gaussian quadrature (5-point).
+ */
+function _cubicArcLength(
+  p0x: number, p0y: number, p1x: number, p1y: number,
+  p2x: number, p2y: number, p3x: number, p3y: number,
+): number {
+  const GW = [0.2369269, 0.4786287, 0.5688889, 0.4786287, 0.2369269];
+  const GT = [0.0469101, 0.2307653, 0.5, 0.7692347, 0.9530899];
+  let len = 0;
+  for (let i = 0; i < 5; i++) {
+    const t = GT[i];
+    const u = 1 - t;
+    const dx = 3 * u * u * (p1x - p0x) + 6 * u * t * (p2x - p1x) + 3 * t * t * (p3x - p2x);
+    const dy = 3 * u * u * (p1y - p0y) + 6 * u * t * (p2y - p1y) + 3 * t * t * (p3y - p2y);
+    len += GW[i] * Math.sqrt(dx * dx + dy * dy);
+  }
+  return len;
+}
+
+/**
+ * Approximate the arc-length of a quadratic bezier using Gaussian quadrature (5-point).
+ */
+function _quadArcLength(
+  p0x: number, p0y: number, p1x: number, p1y: number,
+  p2x: number, p2y: number,
+): number {
+  const GW = [0.2369269, 0.4786287, 0.5688889, 0.4786287, 0.2369269];
+  const GT = [0.0469101, 0.2307653, 0.5, 0.7692347, 0.9530899];
+  let len = 0;
+  for (let i = 0; i < 5; i++) {
+    const t = GT[i];
+    const u = 1 - t;
+    const dx = 2 * u * (p1x - p0x) + 2 * t * (p2x - p1x);
+    const dy = 2 * u * (p1y - p0y) + 2 * t * (p2y - p1y);
+    len += GW[i] * Math.sqrt(dx * dx + dy * dy);
+  }
+  return len;
+}
+
+/**
+ * Find the parametric t for a given arc-length distance from the start (or end)
+ * of a cubic bezier, using bisection.
+ */
+function _cubicTForDist(
+  p0x: number, p0y: number, p1x: number, p1y: number,
+  p2x: number, p2y: number, p3x: number, p3y: number,
+  dist: number, fromEnd: boolean,
+): number {
+  const totalLen = _cubicArcLength(p0x, p0y, p1x, p1y, p2x, p2y, p3x, p3y);
+  if (dist >= totalLen * 0.99) return fromEnd ? 0.01 : 0.99;
+  const target = fromEnd ? totalLen - dist : dist;
+  let lo = 0, hi = 1;
+  for (let iter = 0; iter < 20; iter++) {
+    const mid = (lo + hi) / 2;
+    const s = _splitCubic(p0x, p0y, p1x, p1y, p2x, p2y, p3x, p3y, mid);
+    const segLen = _cubicArcLength(p0x, p0y, s.first.x1, s.first.y1, s.first.x2, s.first.y2, s.first.x, s.first.y);
+    if (segLen < target) lo = mid; else hi = mid;
+  }
+  return (lo + hi) / 2;
+}
+
+/**
+ * Find the parametric t for a given arc-length distance from the start (or end)
+ * of a quadratic bezier, using bisection.
+ */
+function _quadTForDist(
+  p0x: number, p0y: number, p1x: number, p1y: number,
+  p2x: number, p2y: number,
+  dist: number, fromEnd: boolean,
+): number {
+  const totalLen = _quadArcLength(p0x, p0y, p1x, p1y, p2x, p2y);
+  if (dist >= totalLen * 0.99) return fromEnd ? 0.01 : 0.99;
+  const target = fromEnd ? totalLen - dist : dist;
+  let lo = 0, hi = 1;
+  for (let iter = 0; iter < 20; iter++) {
+    const mid = (lo + hi) / 2;
+    const s = _splitQuad(p0x, p0y, p1x, p1y, p2x, p2y, mid);
+    const segLen = _quadArcLength(p0x, p0y, s.first.x1, s.first.y1, s.first.x, s.first.y);
+    if (segLen < target) lo = mid; else hi = mid;
+  }
+  return (lo + hi) / 2;
+}
+
+interface TrimPt { x: number; y: number; tx: number; ty: number; t: number }
+
+/**
+ * Apply corner radius to sharp corners in all contours.
+ * Computes trim points on actual curves (not linear offsets) to avoid
+ * discontinuities between arcs and trimmed curve segments.
+ */
+function applyCornerRadius(commands: PathCommand[], radius: number): PathCommand[] {
+  if (radius <= 0) return commands;
+
+  const ranges = getContourRanges(commands);
+  const result: PathCommand[] = [];
+
+  for (const { start, end } of ranges) {
+    const contour = commands.slice(start, end + 1);
+    const hasZ = contour.length > 0 && contour[contour.length - 1]?.type === 'Z';
+
+    // Collect on-curve vertices
+    const pts: { x: number; y: number; ci: number }[] = [];
+    for (let i = 0; i < contour.length; i++) {
+      const c = contour[i];
+      if (c.type !== 'Z' && c.x !== undefined && c.y !== undefined) {
+        pts.push({ x: c.x, y: c.y, ci: i });
+      }
+    }
+
+    const N = pts.length;
+    if (!hasZ || N < 3) { result.push(...contour); continue; }
+
+    // Segment type and arc-length for segment from vertex i to vertex (i+1)%N
+    const segType = (i: number): 'L' | 'C' | 'Q' => {
+      const ni = (i + 1) % N;
+      if (ni === 0) return 'L'; // closing Z is always straight
+      const c = contour[pts[ni].ci];
+      if (c.type === 'C') return 'C';
+      if (c.type === 'Q') return 'Q';
+      return 'L';
+    };
+
+    const segLen = (i: number): number => {
+      const v = pts[i], nv = pts[(i + 1) % N], ni = (i + 1) % N;
+      if (ni === 0) return Math.sqrt((nv.x - v.x) ** 2 + (nv.y - v.y) ** 2);
+      const c = contour[nv.ci];
+      if (c.type === 'C') return _cubicArcLength(v.x, v.y, c.x1!, c.y1!, c.x2!, c.y2!, nv.x, nv.y);
+      if (c.type === 'Q') return _quadArcLength(v.x, v.y, c.x1!, c.y1!, nv.x, nv.y);
+      return Math.sqrt((nv.x - v.x) ** 2 + (nv.y - v.y) ** 2);
+    };
+
+    // Tangent at vertex i from the incoming segment (direction of travel)
+    const tangentIn = (i: number): { nx: number; ny: number } => {
+      const v = pts[i], pv = pts[(i - 1 + N) % N];
+      const pi = (i - 1 + N) % N;
+      const st = segType(pi);
+      if (st === 'C' && i > 0) {
+        const c = contour[v.ci];
+        if (c.type === 'C' && c.x2 !== undefined) {
+          const dx = v.x - c.x2, dy = v.y - c.y2!;
+          const len = Math.sqrt(dx * dx + dy * dy);
+          if (len > 0.001) return { nx: dx / len, ny: dy / len };
+        }
+      } else if (st === 'Q' && i > 0) {
+        const c = contour[v.ci];
+        if (c.type === 'Q' && c.x1 !== undefined) {
+          const dx = v.x - c.x1, dy = v.y - c.y1!;
+          const len = Math.sqrt(dx * dx + dy * dy);
+          if (len > 0.001) return { nx: dx / len, ny: dy / len };
+        }
+      }
+      const dx = v.x - pv.x, dy = v.y - pv.y;
+      const len = Math.sqrt(dx * dx + dy * dy);
+      return { nx: len > 0.001 ? dx / len : 0, ny: len > 0.001 ? dy / len : 0 };
+    };
+
+    // Tangent at vertex i towards the outgoing segment (direction of travel)
+    const tangentOut = (i: number): { nx: number; ny: number } => {
+      const v = pts[i], nv = pts[(i + 1) % N], ni = (i + 1) % N;
+      if (ni !== 0) {
+        const c = contour[nv.ci];
+        if (c.type === 'C' && c.x1 !== undefined) {
+          const dx = c.x1 - v.x, dy = c.y1! - v.y;
+          const len = Math.sqrt(dx * dx + dy * dy);
+          if (len > 0.001) return { nx: dx / len, ny: dy / len };
+        } else if (c.type === 'Q' && c.x1 !== undefined) {
+          const dx = c.x1 - v.x, dy = c.y1! - v.y;
+          const len = Math.sqrt(dx * dx + dy * dy);
+          if (len > 0.001) return { nx: dx / len, ny: dy / len };
+        }
+      }
+      const dx = nv.x - v.x, dy = nv.y - v.y;
+      const len = Math.sqrt(dx * dx + dy * dy);
+      return { nx: len > 0.001 ? dx / len : 0, ny: len > 0.001 ? dy / len : 0 };
+    };
+
+    // Detect corners and compute initial trim distances
+    interface CornerInfo {
+      isCorner: boolean; trim: number; angle: number;
+    }
+    const corners: CornerInfo[] = [];
+    for (let i = 0; i < N; i++) {
+      const iD = tangentIn(i), oD = tangentOut(i);
+      if ((iD.nx === 0 && iD.ny === 0) || (oD.nx === 0 && oD.ny === 0)) {
+        corners.push({ isCorner: false, trim: 0, angle: 0 }); continue;
+      }
+      const dot = iD.nx * oD.nx + iD.ny * oD.ny;
+      const angle = Math.acos(Math.max(-1, Math.min(1, dot)));
+      const isCorner = angle > 0.1;
+      let trim = 0;
+      if (isCorner) {
+        const ha = (Math.PI - angle) / 2;
+        const th = Math.tan(ha);
+        trim = th > 0.001 ? radius / th : radius * 100;
+        const pi = (i - 1 + N) % N;
+        trim = Math.min(trim, segLen(pi) * 0.49, segLen(i) * 0.49);
+      }
+      corners.push({ isCorner, trim, angle });
+    }
+
+    // Clamp shared segments so adjacent corners don't over-trim
+    for (let i = 0; i < N; i++) {
+      const ni = (i + 1) % N;
+      if (corners[i].isCorner && corners[ni].isCorner) {
+        const total = corners[i].trim + corners[ni].trim;
+        const sl = segLen(i);
+        if (total > sl * 0.98 && total > 0) {
+          const s = (sl * 0.98) / total;
+          corners[i].trim *= s;
+          corners[ni].trim *= s;
+        }
+      }
+    }
+
+    // Compute actual trim points on curves for each corner
+    // inTrim[i] = point + tangent on the incoming segment, at distance trim from vertex i
+    // outTrim[i] = point + tangent on the outgoing segment, at distance trim from vertex i
+    const inTrim: (TrimPt | null)[] = new Array(N).fill(null);
+    const outTrim: (TrimPt | null)[] = new Array(N).fill(null);
+
+    for (let i = 0; i < N; i++) {
+      if (!corners[i].isCorner || corners[i].trim < 0.5) continue;
+      const trim = corners[i].trim;
+      const v = pts[i];
+
+      // Incoming trim: on the segment from pts[prev] to pts[i], distance trim from end
+      const pi = (i - 1 + N) % N;
+      const prevV = pts[pi];
+      const inST = segType(pi);
+      if (inST === 'C' && i > 0) {
+        const c = contour[v.ci];
+        const t = _cubicTForDist(prevV.x, prevV.y, c.x1!, c.y1!, c.x2!, c.y2!, v.x, v.y, trim, true);
+        const ev = _evalCubic(prevV.x, prevV.y, c.x1!, c.y1!, c.x2!, c.y2!, v.x, v.y, t);
+        inTrim[i] = { x: ev.x, y: ev.y, tx: ev.tx, ty: ev.ty, t };
+      } else if (inST === 'Q' && i > 0) {
+        const c = contour[v.ci];
+        const t = _quadTForDist(prevV.x, prevV.y, c.x1!, c.y1!, v.x, v.y, trim, true);
+        const ev = _evalQuad(prevV.x, prevV.y, c.x1!, c.y1!, v.x, v.y, t);
+        inTrim[i] = { x: ev.x, y: ev.y, tx: ev.tx, ty: ev.ty, t };
+      } else {
+        // Straight line: linear offset
+        const dx = v.x - prevV.x, dy = v.y - prevV.y;
+        const len = Math.sqrt(dx * dx + dy * dy);
+        const nx = len > 0.001 ? dx / len : 0, ny = len > 0.001 ? dy / len : 0;
+        inTrim[i] = { x: v.x - nx * trim, y: v.y - ny * trim, tx: nx, ty: ny, t: len > 0.001 ? 1 - trim / len : 1 };
+      }
+
+      // Outgoing trim: on the segment from pts[i] to pts[next], distance trim from start
+      const ni = (i + 1) % N;
+      const nextV = pts[ni];
+      const outST = segType(i);
+      if (outST === 'C' && ni !== 0) {
+        const c = contour[nextV.ci];
+        const t = _cubicTForDist(v.x, v.y, c.x1!, c.y1!, c.x2!, c.y2!, nextV.x, nextV.y, trim, false);
+        const ev = _evalCubic(v.x, v.y, c.x1!, c.y1!, c.x2!, c.y2!, nextV.x, nextV.y, t);
+        outTrim[i] = { x: ev.x, y: ev.y, tx: ev.tx, ty: ev.ty, t };
+      } else if (outST === 'Q' && ni !== 0) {
+        const c = contour[nextV.ci];
+        const t = _quadTForDist(v.x, v.y, c.x1!, c.y1!, nextV.x, nextV.y, trim, false);
+        const ev = _evalQuad(v.x, v.y, c.x1!, c.y1!, nextV.x, nextV.y, t);
+        outTrim[i] = { x: ev.x, y: ev.y, tx: ev.tx, ty: ev.ty, t };
+      } else {
+        // Straight line: linear offset
+        const dx = nextV.x - v.x, dy = nextV.y - v.y;
+        const len = Math.sqrt(dx * dx + dy * dy);
+        const nx = len > 0.001 ? dx / len : 0, ny = len > 0.001 ? dy / len : 0;
+        outTrim[i] = { x: v.x + nx * trim, y: v.y + ny * trim, tx: nx, ty: ny, t: len > 0.001 ? trim / len : 0 };
+      }
+    }
+
+    // Emit a rounded arc from inTrim to outTrim at corner vertex i
+    const emitArc = (out: PathCommand[], i: number) => {
+      const inP = inTrim[i]!, outP = outTrim[i]!;
+      const angle = corners[i].angle;
+      const halfOpen = (Math.PI - angle) / 2;
+      const actualR = corners[i].trim * Math.tan(halfOpen);
+      const h = (4 / 3) * Math.tan(Math.max(0.001, angle) / 4) * actualR;
+
+      out.push({
+        type: 'C',
+        x1: Math.round(inP.x + inP.tx * h), y1: Math.round(inP.y + inP.ty * h),
+        x2: Math.round(outP.x - outP.tx * h), y2: Math.round(outP.y - outP.ty * h),
+        x: Math.round(outP.x), y: Math.round(outP.y),
+      });
+    };
+
+    // Emit a segment from vertex fi to vertex ti, clipped by corner trim points
+    const emitSeg = (out: PathCommand[], fi: number, ti: number) => {
+      const fv = pts[fi], tv = pts[ti];
+      const hasStartTrim = corners[fi].isCorner && outTrim[fi] !== null;
+      const hasEndTrim = corners[ti].isCorner && inTrim[ti] !== null;
+
+      const st = segType(fi);
+
+      if (st === 'L' || ti === 0) {
+        const ex = hasEndTrim ? inTrim[ti]!.x : tv.x;
+        const ey = hasEndTrim ? inTrim[ti]!.y : tv.y;
+        out.push({ type: 'L', x: Math.round(ex), y: Math.round(ey) });
+        return;
+      }
+
+      const cmd = contour[tv.ci];
+      if (cmd.type === 'C') {
+        let p0x = fv.x, p0y = fv.y;
+        let x1 = cmd.x1!, y1 = cmd.y1!, x2 = cmd.x2!, y2 = cmd.y2!;
+        let px = tv.x, py = tv.y;
+
+        const t1 = hasStartTrim ? outTrim[fi]!.t : 0;
+        const t2 = hasEndTrim ? inTrim[ti]!.t : 1;
+
+        if (t2 >= 1 - 1e-6 && t1 <= 1e-6) {
+          out.push({ type: 'C', x1: Math.round(x1), y1: Math.round(y1), x2: Math.round(x2), y2: Math.round(y2), x: Math.round(px), y: Math.round(py) });
+          return;
+        }
+
+        // Clip end first, then start
+        if (t2 < 1 - 1e-6) {
+          const s = _splitCubic(p0x, p0y, x1, y1, x2, y2, px, py, t2);
+          x1 = s.first.x1; y1 = s.first.y1; x2 = s.first.x2; y2 = s.first.y2;
+          px = s.first.x; py = s.first.y;
+        }
+        if (t1 > 1e-6) {
+          const adjT = t2 < 1 - 1e-6 ? t1 / t2 : t1;
+          const s = _splitCubic(p0x, p0y, x1, y1, x2, y2, px, py, adjT);
+          x1 = s.second.x1; y1 = s.second.y1; x2 = s.second.x2; y2 = s.second.y2;
+          // p0 is now the split point — but it's the implicit pen position, so we don't change px/py
+        }
+        out.push({ type: 'C', x1: Math.round(x1), y1: Math.round(y1), x2: Math.round(x2), y2: Math.round(y2), x: Math.round(px), y: Math.round(py) });
+      } else if (cmd.type === 'Q') {
+        let p0x = fv.x, p0y = fv.y;
+        let qx1 = cmd.x1!, qy1 = cmd.y1!;
+        let px = tv.x, py = tv.y;
+
+        const t1 = hasStartTrim ? outTrim[fi]!.t : 0;
+        const t2 = hasEndTrim ? inTrim[ti]!.t : 1;
+
+        if (t2 >= 1 - 1e-6 && t1 <= 1e-6) {
+          out.push({ type: 'Q', x1: Math.round(qx1), y1: Math.round(qy1), x: Math.round(px), y: Math.round(py) });
+          return;
+        }
+
+        if (t2 < 1 - 1e-6) {
+          const s = _splitQuad(p0x, p0y, qx1, qy1, px, py, t2);
+          qx1 = s.first.x1; qy1 = s.first.y1; px = s.first.x; py = s.first.y;
+        }
+        if (t1 > 1e-6) {
+          const adjT = t2 < 1 - 1e-6 ? t1 / t2 : t1;
+          const s = _splitQuad(p0x, p0y, qx1, qy1, px, py, adjT);
+          qx1 = s.second.x1; qy1 = s.second.y1;
+        }
+        out.push({ type: 'Q', x1: Math.round(qx1), y1: Math.round(qy1), x: Math.round(px), y: Math.round(py) });
+      }
+    };
+
+    // Build output path
+    const r: PathCommand[] = [];
+
+    // Starting M point
+    if (corners[0].isCorner && inTrim[0]) {
+      r.push({ type: 'M', x: Math.round(inTrim[0].x), y: Math.round(inTrim[0].y) });
+      emitArc(r, 0);
+    } else {
+      r.push({ type: 'M', x: pts[0].x, y: pts[0].y });
+    }
+
+    // Emit each segment then its destination arc
+    for (let s = 0; s < N; s++) {
+      const ni = (s + 1) % N;
+      emitSeg(r, s, ni);
+      if (ni !== 0 && corners[ni].isCorner && corners[ni].trim > 0.5) {
+        emitArc(r, ni);
+      }
+    }
+
+    r.push({ type: 'Z' });
+    result.push(...r);
+  }
+
+  return result;
+}
+
 export function applyDesignTools(
   commands: PathCommand[],
   tools: DesignToolValues,
@@ -852,7 +1300,10 @@ export function applyDesignTools(
     return { commands, advanceWidthDelta: 0 };
   }
 
-  const bounds = getGlyphBounds(commands);
+  // Apply corner radius as a preprocessing step
+  const cmds = tools.cornerRadius > 0 ? applyCornerRadius(commands, tools.cornerRadius) : commands;
+
+  const bounds = getGlyphBounds(cmds);
   const { cx, cy, minX, maxX, minY, maxY } = bounds;
   const upm = font.unitsPerEm;
   const glyphW = maxX - minX || 1;
@@ -863,18 +1314,18 @@ export function applyDesignTools(
   let outlineNormals: Map<number, { nx: number; ny: number }> | null = null;
   let cpNormals: Map<number, { field: 'cp1' | 'cp2'; nx: number; ny: number }[]> | null = null;
   if (tools.weight !== 0 || tools.contrast !== 0 || tools.inkTrap !== 0 || tools.serif !== 0) {
-    outlineNormals = computeOutlineNormals(commands);
-    cpNormals = computeControlPointNormals(commands, outlineNormals);
+    outlineNormals = computeOutlineNormals(cmds);
+    cpNormals = computeControlPointNormals(cmds, outlineNormals);
   }
 
   // Classify points for roundness
-  const { anchorIndices } = buildAnchorGraph(commands);
+  const { anchorIndices } = buildAnchorGraph(cmds);
 
   // Precompute ink trap sharpness per point (dot product of neighbor normals)
   let inkTrapSharpness: Map<number, number> | null = null;
   if (tools.inkTrap !== 0 && outlineNormals) {
     inkTrapSharpness = new Map();
-    const ranges = getContourRanges(commands);
+    const ranges = getContourRanges(cmds);
     for (const { start, end } of ranges) {
       const pts: number[] = [];
       for (let i = start; i <= end; i++) {
@@ -894,7 +1345,7 @@ export function applyDesignTools(
   }
 
   let advDelta = 0;
-  const result = commands.map((cmd, cmdIdx) => {
+  const result = cmds.map((cmd, cmdIdx) => {
     const c: PathCommand = { ...cmd };
 
     // Helper: get the normal-based offset for weight/contrast
@@ -1120,7 +1571,7 @@ export function applyDesignTools(
       // Find the previous endpoint (start anchor of this segment)
       let prevX = c.x ?? 0, prevY = c.y ?? 0;
       for (let k = cmdIdx - 1; k >= 0; k--) {
-        const prev = commands[k];
+        const prev = cmds[k];
         if (prev.x !== undefined && prev.y !== undefined) {
           prevX = prev.x;
           prevY = prev.y;
@@ -1155,6 +1606,142 @@ export function applyDesignTools(
 
     return c;
   });
+
+  // Smooth: applied as a post-pass at every anchor point in every contour.
+  // Uses contour command indices directly to ensure all junctions are processed.
+  // - Curve-curve: equalizes handle lengths and blends toward collinearity.
+  // - Curve-line / line-curve: blends the curve handle toward the line direction.
+  if (tools.smooth > 0) {
+    const blendBase = Math.min(1, (tools.smooth / 1000) * 0.9);
+    const iterations = 2; // Run twice for more consistent effect across anchors
+    const ranges = getContourRanges(result);
+
+    for (let iter = 0; iter < iterations; iter++) {
+      for (const { start, end } of ranges) {
+        const contour = result.slice(start, end + 1);
+        const n = contour.length;
+        const hasZ = contour[n - 1]?.type === 'Z';
+        const lastAnchorIdx = n - (hasZ ? 2 : 1); // last command with endpoint before Z
+        if (lastAnchorIdx < 0) continue;
+
+        for (let a = 0; a <= lastAnchorIdx; a++) {
+          const currCmd = contour[a];
+          if (currCmd.type === 'Z') continue;
+          const ax = currCmd.x ?? 0;
+          const ay = currCmd.y ?? 0;
+
+          // Segment that ENDS at this anchor (incoming)
+          const inSegIdx = (a === 0 && hasZ) ? lastAnchorIdx : a;
+          const inSeg = contour[inSegIdx];
+          // Segment that STARTS at this anchor (outgoing) — skip M
+          const outSegIdx = (a === lastAnchorIdx && hasZ) ? 1 : a + 1;
+          const outSeg = contour[outSegIdx];
+          if (!outSeg || outSeg.type === 'Z') continue;
+
+          // Prev/next anchor positions for line-direction (start of inSeg, end of outSeg)
+          const prevIdx = inSegIdx > 0 ? inSegIdx - 1 : (hasZ ? lastAnchorIdx - 1 : 0);
+          const prevX = (prevIdx >= 0 ? contour[prevIdx] : contour[0])?.x ?? ax;
+          const prevY = (prevIdx >= 0 ? contour[prevIdx] : contour[0])?.y ?? ay;
+          const nextX = outSeg.x ?? ax;
+          const nextY = outSeg.y ?? ay;
+
+          let inHx = 0, inHy = 0, inLen = 0;
+          let hasInHandle = false;
+          if (inSeg.type === 'C' && inSeg.x2 !== undefined && inSeg.y2 !== undefined) {
+            inHx = inSeg.x2 - ax;
+            inHy = inSeg.y2 - ay;
+            inLen = Math.sqrt(inHx * inHx + inHy * inHy);
+            hasInHandle = inLen > 0.5;
+          } else if (inSeg.type === 'Q' && inSeg.x1 !== undefined && inSeg.y1 !== undefined) {
+            inHx = inSeg.x1 - ax;
+            inHy = inSeg.y1 - ay;
+            inLen = Math.sqrt(inHx * inHx + inHy * inHy);
+            hasInHandle = inLen > 0.5;
+          }
+
+          let outHx = 0, outHy = 0, outLen = 0;
+          let hasOutHandle = false;
+          if (outSeg.type === 'C' && outSeg.x1 !== undefined && outSeg.y1 !== undefined) {
+            outHx = outSeg.x1 - ax;
+            outHy = outSeg.y1 - ay;
+            outLen = Math.sqrt(outHx * outHx + outHy * outHy);
+            hasOutHandle = outLen > 0.5;
+          } else if (outSeg.type === 'Q' && outSeg.x1 !== undefined && outSeg.y1 !== undefined) {
+            outHx = outSeg.x1 - ax;
+            outHy = outSeg.y1 - ay;
+            outLen = Math.sqrt(outHx * outHx + outHy * outHy);
+            hasOutHandle = outLen > 0.5;
+          }
+
+          const lineInDx = ax - prevX;
+          const lineInDy = ay - prevY;
+          const lineInLen = Math.sqrt(lineInDx * lineInDx + lineInDy * lineInDy);
+          const lineOutDx = nextX - ax;
+          const lineOutDy = nextY - ay;
+          const lineOutLen = Math.sqrt(lineOutDx * lineOutDx + lineOutDy * lineOutDy);
+          const prevIsLine = inSeg.type === 'L' || inSeg.type === 'M';
+          const nextIsLine = outSeg.type === 'L';
+
+          if (hasInHandle && hasOutHandle) {
+            const avgLen = (inLen + outLen) / 2;
+            const d1x = outHx / outLen;
+            const d1y = outHy / outLen;
+            const d2x = inHx / inLen;
+            const d2y = inHy / inLen;
+            const smoothDirX = d1x - d2x;
+            const smoothDirY = d1y - d2y;
+            const smoothLen = Math.sqrt(smoothDirX * smoothDirX + smoothDirY * smoothDirY);
+            if (smoothLen > 0.001) {
+              const tx = smoothDirX / smoothLen;
+              const ty = smoothDirY / smoothLen;
+              const outTargetX = ax + tx * avgLen;
+              const outTargetY = ay + ty * avgLen;
+              const inTargetX = ax - tx * avgLen;
+              const inTargetY = ay - ty * avgLen;
+              if (inSeg.type === 'C' && inSeg.x2 !== undefined && inSeg.y2 !== undefined) {
+                inSeg.x2 = Math.round(inSeg.x2 + (inTargetX - inSeg.x2) * blendBase);
+                inSeg.y2 = Math.round(inSeg.y2 + (inTargetY - inSeg.y2) * blendBase);
+              } else if (inSeg.type === 'Q' && inSeg.x1 !== undefined && inSeg.y1 !== undefined) {
+                inSeg.x1 = Math.round(inSeg.x1 + (inTargetX - inSeg.x1) * blendBase);
+                inSeg.y1 = Math.round(inSeg.y1 + (inTargetY - inSeg.y1) * blendBase);
+              }
+              if (outSeg.type === 'C' && outSeg.x1 !== undefined && outSeg.y1 !== undefined) {
+                outSeg.x1 = Math.round(outSeg.x1 + (outTargetX - outSeg.x1) * blendBase);
+                outSeg.y1 = Math.round(outSeg.y1 + (outTargetY - outSeg.y1) * blendBase);
+              } else if (outSeg.type === 'Q' && outSeg.x1 !== undefined && outSeg.y1 !== undefined) {
+                outSeg.x1 = Math.round(outSeg.x1 + (outTargetX - outSeg.x1) * blendBase);
+                outSeg.y1 = Math.round(outSeg.y1 + (outTargetY - outSeg.y1) * blendBase);
+              }
+            }
+          } else if (hasInHandle && nextIsLine && lineOutLen > 0.5) {
+            const lx = lineOutDx / lineOutLen;
+            const ly = lineOutDy / lineOutLen;
+            const inTargetX = ax - lx * inLen;
+            const inTargetY = ay - ly * inLen;
+            if (inSeg.type === 'C' && inSeg.x2 !== undefined && inSeg.y2 !== undefined) {
+              inSeg.x2 = Math.round(inSeg.x2 + (inTargetX - inSeg.x2) * blendBase);
+              inSeg.y2 = Math.round(inSeg.y2 + (inTargetY - inSeg.y2) * blendBase);
+            } else if (inSeg.type === 'Q' && inSeg.x1 !== undefined && inSeg.y1 !== undefined) {
+              inSeg.x1 = Math.round(inSeg.x1 + (inTargetX - inSeg.x1) * blendBase);
+              inSeg.y1 = Math.round(inSeg.y1 + (inTargetY - inSeg.y1) * blendBase);
+            }
+          } else if (hasOutHandle && prevIsLine && lineInLen > 0.5) {
+            const lx = lineInDx / lineInLen;
+            const ly = lineInDy / lineInLen;
+            const outTargetX = ax + lx * outLen;
+            const outTargetY = ay + ly * outLen;
+            if (outSeg.type === 'C' && outSeg.x1 !== undefined && outSeg.y1 !== undefined) {
+              outSeg.x1 = Math.round(outSeg.x1 + (outTargetX - outSeg.x1) * blendBase);
+              outSeg.y1 = Math.round(outSeg.y1 + (outTargetY - outSeg.y1) * blendBase);
+            } else if (outSeg.type === 'Q' && outSeg.x1 !== undefined && outSeg.y1 !== undefined) {
+              outSeg.x1 = Math.round(outSeg.x1 + (outTargetX - outSeg.x1) * blendBase);
+              outSeg.y1 = Math.round(outSeg.y1 + (outTargetY - outSeg.y1) * blendBase);
+            }
+          }
+        }
+      }
+    }
+  }
 
   // Spacing: shift glyph horizontally and adjust advance width
   if (tools.spacing !== 0) {

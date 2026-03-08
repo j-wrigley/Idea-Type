@@ -1092,6 +1092,31 @@ html, body, #root {
   font-family: var(--font-mono);
 }
 
+.slider-value-clickable {
+  cursor: text;
+  padding: 1px 4px;
+  border-radius: 3px;
+  transition: background 0.15s;
+}
+
+.slider-value-clickable:hover {
+  background: var(--bg-elevated);
+  color: var(--text-primary);
+}
+
+.slider-value-input {
+  width: 56px;
+  font-size: 11px;
+  font-family: var(--font-mono);
+  color: var(--text-primary);
+  background: var(--bg-elevated);
+  border: 1px solid var(--accent);
+  border-radius: 3px;
+  padding: 1px 4px;
+  outline: none;
+  text-align: right;
+}
+
 .slider-track-container {
   display: flex;
   align-items: center;
@@ -2091,8 +2116,50 @@ html, body, #root {
   color: var(--text-primary);
 }
 
+.guideline-group-label {
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text-secondary);
+  margin: 8px 0 2px;
+}
+
+.guideline-axis-toggle {
+  display: flex;
+  gap: 0;
+  flex-shrink: 0;
+}
+
+.guideline-axis-btn {
+  padding: 2px 6px;
+  font-size: 11px;
+  font-weight: 600;
+  border: 1px solid var(--border-color);
+  background: var(--bg-primary);
+  color: var(--text-secondary);
+  cursor: pointer;
+  line-height: 1.2;
+}
+
+.guideline-axis-btn:first-child {
+  border-radius: var(--radius-sm) 0 0 var(--radius-sm);
+  border-right: none;
+}
+
+.guideline-axis-btn:last-child {
+  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+}
+
+.guideline-axis-btn.active {
+  background: var(--text-primary);
+  color: var(--bg-primary);
+  border-color: var(--text-primary);
+}
+
 .guideline-add-form {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 4px;
   margin-top: 6px;

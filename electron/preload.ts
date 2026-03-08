@@ -11,4 +11,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
     html: clipboard.readHTML(),
     text: clipboard.readText(),
   }),
+
+  writeClipboard: (text: string, html: string): void => {
+    clipboard.write({ text, html });
+  },
 });

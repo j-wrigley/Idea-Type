@@ -1,7 +1,7 @@
 import React, { useCallback, useState } from 'react';
 
 interface FontUploaderProps {
-  onFontLoaded: (buffer: ArrayBuffer, fileName: string) => void;
+  onFontLoaded: (buffer: ArrayBuffer, fileName: string) => void | Promise<void>;
   onOpenDialog: () => void;
   onCreateNew: () => void;
 }
@@ -34,17 +34,20 @@ export const FontUploader: React.FC<FontUploaderProps> = ({
       const file = e.dataTransfer.files[0];
       if (!file) return;
 
-      const validExts = ['.otf', '.ttf', '.woff'];
+      const validExts = ['.otf', '.ttf', '.woff', '.woff2'];
       const ext = file.name.substring(file.name.lastIndexOf('.')).toLowerCase();
       if (!validExts.includes(ext)) {
-        alert('Please upload a .otf, .ttf, or .woff font file.');
+        alert('Please upload a .otf, .ttf, .woff, or .woff2 font file.');
         return;
       }
 
       const reader = new FileReader();
       reader.onload = () => {
         if (reader.result instanceof ArrayBuffer) {
-          onFontLoaded(reader.result, file.name);
+          const result = onFontLoaded(reader.result, file.name);
+          if (result && typeof (result as Promise<unknown>).catch === 'function') {
+            (result as Promise<void>).catch(() => {});
+          }
         }
       };
       reader.readAsArrayBuffer(file);
@@ -71,7 +74,7 @@ export const FontUploader: React.FC<FontUploaderProps> = ({
         <p className="uploader-subtitle">
           Drag & drop a font file here, or click below to browse
         </p>
-        <p className="uploader-formats">Supports .otf, .ttf, .woff</p>
+        <p className="uploader-formats">Supports .otf, .ttf, .woff, .woff2</p>
         <div className="uploader-actions">
           <button className="uploader-button" onClick={onOpenDialog}>
             Open Font File

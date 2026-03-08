@@ -2,11 +2,47 @@ import { app, BrowserWindow, dialog, ipcMain, Menu } from 'electron';
 import { readFileSync, writeFileSync } from 'fs';
 import path from 'path';
 
-let mainWindow: BrowserWindow | null = null;
+function createWindow() {
+  const win = new BrowserWindow({
+    width: 1440,
+    height: 900,
+    minWidth: 1000,
+    minHeight: 700,
+    titleBarStyle: 'hiddenInset',
+    backgroundColor: '#0a0a0a',
+    trafficLightPosition: { x: 16, y: 16 },
+    webPreferences: {
+      preload: path.join(__dirname, 'preload.js'),
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: false,
+    },
+  });
+
+  if (process.env.VITE_DEV_SERVER_URL) {
+    win.loadURL(process.env.VITE_DEV_SERVER_URL);
+  } else {
+    win.loadFile(path.join(__dirname, '../dist/index.html'));
+  }
+
+  return win;
+}
 
 function createAppMenu() {
   const template: Electron.MenuItemConstructorOptions[] = [
     { role: 'appMenu' },
+    {
+      label: 'File',
+      submenu: [
+        {
+          label: 'New Window',
+          accelerator: 'CmdOrCtrl+Shift+N',
+          click: () => createWindow(),
+        },
+        { type: 'separator' },
+        { role: 'close' },
+      ],
+    },
     {
       label: 'Edit',
       submenu: [
@@ -25,30 +61,6 @@ function createAppMenu() {
   Menu.setApplicationMenu(Menu.buildFromTemplate(template));
 }
 
-function createWindow() {
-  mainWindow = new BrowserWindow({
-    width: 1440,
-    height: 900,
-    minWidth: 1000,
-    minHeight: 700,
-    titleBarStyle: 'hiddenInset',
-    backgroundColor: '#0a0a0a',
-    trafficLightPosition: { x: 16, y: 16 },
-    webPreferences: {
-      preload: path.join(__dirname, 'preload.js'),
-      contextIsolation: true,
-      nodeIntegration: false,
-      sandbox: false,
-    },
-  });
-
-  if (process.env.VITE_DEV_SERVER_URL) {
-    mainWindow.loadURL(process.env.VITE_DEV_SERVER_URL);
-  } else {
-    mainWindow.loadFile(path.join(__dirname, '../dist/index.html'));
-  }
-}
-
 app.whenReady().then(() => {
   createAppMenu();
   createWindow();
@@ -64,13 +76,14 @@ app.on('activate', () => {
   }
 });
 
-ipcMain.handle('open-font-file', async () => {
-  if (!mainWindow) return null;
+ipcMain.handle('open-font-file', async (event) => {
+  const win = BrowserWindow.fromWebContents(event.sender);
+  if (!win) return null;
 
-  const result = await dialog.showOpenDialog(mainWindow, {
+  const result = await dialog.showOpenDialog(win, {
     properties: ['openFile'],
     filters: [
-      { name: 'Font Files', extensions: ['otf', 'ttf', 'woff'] },
+      { name: 'Font Files', extensions: ['otf', 'ttf', 'woff', 'woff2'] },
     ],
   });
 
@@ -93,10 +106,11 @@ ipcMain.handle('open-font-file', async () => {
 
 ipcMain.handle(
   'save-font-file',
-  async (_event, arrayBuffer: ArrayBuffer, defaultName: string) => {
-    if (!mainWindow) return false;
+  async (event, arrayBuffer: ArrayBuffer, defaultName: string) => {
+    const win = BrowserWindow.fromWebContents(event.sender);
+    if (!win) return false;
 
-    const result = await dialog.showSaveDialog(mainWindow, {
+    const result = await dialog.showSaveDialog(win, {
       defaultPath: defaultName,
       filters: [
         { name: 'OpenType Font', extensions: ['otf'] },

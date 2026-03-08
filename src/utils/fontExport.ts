@@ -1,6 +1,13 @@
 import type { Font, PathCommand } from 'opentype.js';
-import { Font as FEFont, type FontEditor, type TTF } from 'fonteditor-core';
+import { Font as FEFont, woff2, type FontEditor, type TTF } from 'fonteditor-core';
 import type { ComponentDef, ComponentInstance, GlyphComponents } from '../types';
+
+function getWoff2WasmUrl(): string {
+  if (typeof window !== 'undefined' && window.location) {
+    return new URL('woff2.wasm', window.location.href).href;
+  }
+  return '/woff2.wasm';
+}
 
 export interface ExportOptions {
   familyName: string;
@@ -28,6 +35,45 @@ function detectFontType(buffer: ArrayBuffer): FontEditor.FontType {
   if (sig === 0x774F4646) return 'woff';
   if (sig === 0x774F4632) return 'woff2';
   return 'ttf';
+}
+
+/**
+ * Convert WOFF or WOFF2 buffer to TTF buffer.
+ * opentype.js does not support WOFF2 and can be unreliable with WOFF,
+ * so we use fonteditor-core to decode and re-encode as TTF.
+ * WOFF2 requires woff2.init() to be called first (loads wasm module).
+ */
+export async function convertToTtfIfNeeded(buffer: ArrayBuffer): Promise<ArrayBuffer> {
+  const view = new DataView(buffer);
+  if (buffer.byteLength < 4) return buffer;
+  const sig = view.getUint32(0);
+  const isWoff = sig === 0x774F4646;
+  const isWoff2 = sig === 0x774F4632;
+  if (!isWoff && !isWoff2) return buffer;
+
+  if (isWoff2 && !woff2.isInited()) {
+    await woff2.init(getWoff2WasmUrl());
+  }
+
+  const feFont = FEFont.create(buffer, {
+    type: isWoff2 ? 'woff2' : 'woff',
+    hinting: false,
+    kerning: true,
+    compound2simple: true,
+  });
+  const result = feFont.write({
+    type: 'ttf',
+    hinting: false,
+    kerning: true,
+    toBuffer: false,
+  });
+  if (result instanceof ArrayBuffer) return result;
+  if (typeof result === 'string') {
+    const enc = new TextEncoder();
+    return enc.encode(result).buffer as ArrayBuffer;
+  }
+  const arr = result as Uint8Array;
+  return arr.buffer.slice(arr.byteOffset, arr.byteOffset + arr.byteLength) as ArrayBuffer;
 }
 
 /**
@@ -230,12 +276,22 @@ function buildFreshTTFObject(otFont: Font): TTF.TTFObject {
     },
     glyf: glyphs,
     cmap: {},
-    name: {
-      fontFamily: otFont.names.fontFamily?.en || 'Untitled',
-      fontSubFamily: otFont.names.fontSubfamily?.en || 'Regular',
-      uniqueSubFamily: '',
-      version: otFont.names.version?.en || 'Version 1.0',
-    },
+    name: (() => {
+      const family = otFont.names.fontFamily?.en || 'Untitled';
+      const sub = otFont.names.fontSubfamily?.en || 'Regular';
+      const ver = otFont.names.version?.en || 'Version 1.0';
+      const ps = family.replace(/\s+/g, '') + '-' + sub.replace(/\s+/g, '');
+      return {
+        fontFamily: family,
+        fontSubFamily: sub,
+        uniqueSubFamily: `${ver};${ps}`,
+        fullName: `${family} ${sub}`,
+        version: ver.startsWith('Version ') ? ver : `Version ${ver}`,
+        postScriptName: ps,
+        preferredFamily: family,
+        preferredSubFamily: sub,
+      };
+    })(),
     hhea: {
       version: 1,
       ascent: otFont.ascender,
@@ -380,6 +436,33 @@ function resolveComponentInstances(
   return result;
 }
 
+function buildNameTable(options: ExportOptions): Record<string, string> {
+  const postScript = options.familyName.replace(/[^!-~]/g, '').replace(/[\[\](){}<>/%]/g, '').substring(0, 63)
+    || options.familyName.replace(/\s+/g, '') + '-' + options.styleName.replace(/\s+/g, '');
+  const fullName = `${options.familyName} ${options.styleName}`;
+  const version = options.version.startsWith('Version ')
+    ? options.version
+    : `Version ${options.version}`;
+
+  const name: Record<string, string> = {
+    fontFamily: options.familyName,
+    fontSubFamily: options.styleName,
+    uniqueSubFamily: `${options.version};${postScript}`,
+    fullName,
+    version,
+    postScriptName: postScript,
+    preferredFamily: options.familyName,
+    preferredSubFamily: options.styleName,
+  };
+
+  if (options.copyright) name.copyright = options.copyright;
+  if (options.designer) name.designer = options.designer;
+  if (options.description) name.description = options.description;
+  if (options.license) name.licence = options.license;
+
+  return name;
+}
+
 export async function exportFont(
   otFont: Font,
   originalBuffer: ArrayBuffer | null,
@@ -466,19 +549,7 @@ export async function exportFont(
     }
 
     // Replace all metadata with user-provided values
-    const postScript = options.familyName.replace(/\s+/g, '') + '-' + options.styleName.replace(/\s+/g, '');
-    ttfObj.name = {
-      fontFamily: options.familyName,
-      fontSubFamily: options.styleName,
-      uniqueSubFamily: `${options.familyName} ${options.styleName}`,
-      version: options.version,
-      postScriptName: postScript,
-      fullName: `${options.familyName} ${options.styleName}`,
-      copyright: options.copyright,
-      designer: options.designer,
-      description: options.description,
-      licence: options.license,
-    };
+    ttfObj.name = buildNameTable(options);
 
     // Build kern table from user's kerning pairs
     if (otFont.kerningPairs && Object.keys(otFont.kerningPairs).length > 0) {
@@ -506,19 +577,7 @@ export async function exportFont(
       }
     }
     const ttfObj = buildFreshTTFObject(otFont);
-    const postScript = options.familyName.replace(/\s+/g, '') + '-' + options.styleName.replace(/\s+/g, '');
-    ttfObj.name = {
-      fontFamily: options.familyName,
-      fontSubFamily: options.styleName,
-      uniqueSubFamily: `${options.familyName} ${options.styleName}`,
-      version: options.version,
-      postScriptName: postScript,
-      fullName: `${options.familyName} ${options.styleName}`,
-      copyright: options.copyright,
-      designer: options.designer,
-      description: options.description,
-      licence: options.license,
-    };
+    ttfObj.name = buildNameTable(options);
 
     // Build kern table from user's kerning pairs
     if (otFont.kerningPairs && Object.keys(otFont.kerningPairs).length > 0) {

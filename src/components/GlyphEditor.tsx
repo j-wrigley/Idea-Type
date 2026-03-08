@@ -51,6 +51,7 @@ interface GlyphEditorProps {
   onCornerPointsChange: (index: number) => void;
   onSetCornerPoints: (indices: number[]) => void;
   showFill: boolean;
+  showPoints?: boolean;
   contextGlyphs?: number[];
   onSwitchActiveGlyph?: (index: number) => void;
   metricLines?: MetricLine[];
@@ -189,6 +190,7 @@ export const GlyphEditor: React.FC<GlyphEditorProps> = ({
   onCornerPointsChange,
   onSetCornerPoints,
   showFill,
+  showPoints: showPointsProp = true,
   contextGlyphs = [],
   onSwitchActiveGlyph,
   metricLines = [],
@@ -260,6 +262,7 @@ export const GlyphEditor: React.FC<GlyphEditorProps> = ({
     currentGlyph: { x: number; y: number };
     altDuplicated: boolean;
     handle: string | null;
+    shiftKey?: boolean;
   } | null>(null);
   const shapeToolDragRef = useRef(shapeToolDrag);
   shapeToolDragRef.current = shapeToolDrag;
@@ -467,9 +470,31 @@ export const GlyphEditor: React.FC<GlyphEditorProps> = ({
       }
     };
 
+    const drawVLine = (glyphX: number, color: string, label: string) => {
+      const screen = mapper.glyphToScreen(glyphX, 0);
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 1;
+      ctx.setLineDash([6, 4]);
+      ctx.beginPath();
+      ctx.moveTo(screen.x, 0);
+      ctx.lineTo(screen.x, height);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.fillStyle = color;
+      ctx.font = '10px -apple-system, BlinkMacSystemFont, sans-serif';
+      ctx.save();
+      ctx.translate(screen.x + 4, 14);
+      ctx.fillText(label, 0, 0);
+      ctx.restore();
+    };
+
     for (const ml of metricLines) {
       if (!ml.visible) continue;
-      drawHLine(ml.value, metricColor(ml.id), `${ml.label} (${ml.value})`);
+      if (ml.axis === 'v') {
+        drawVLine(ml.value, metricColor(ml.id), `${ml.label} (${ml.value})`);
+      } else {
+        drawHLine(ml.value, metricColor(ml.id), `${ml.label} (${ml.value})`);
+      }
     }
 
     // Advance width vertical lines
@@ -607,12 +632,14 @@ export const GlyphEditor: React.FC<GlyphEditorProps> = ({
           ctx.closePath();
         }
       }
-      if (showFill) {
+      if (showFill || !showPointsProp) {
         ctx.fillStyle = theme === 'dark' ? 'rgba(255, 255, 255, 0.85)' : 'rgba(0, 0, 0, 0.85)';
         ctx.fill('evenodd');
-        ctx.strokeStyle = COLORS.glyphStroke;
-        ctx.lineWidth = 1.5;
-        ctx.stroke();
+        if (showPointsProp) {
+          ctx.strokeStyle = COLORS.glyphStroke;
+          ctx.lineWidth = 1.5;
+          ctx.stroke();
+        }
       } else {
         ctx.fillStyle = COLORS.glyphFill;
         ctx.fill('evenodd');
@@ -728,7 +755,8 @@ export const GlyphEditor: React.FC<GlyphEditorProps> = ({
         }
       }
 
-      // Handle lines
+      // Handle lines & points (hidden in preview mode)
+      if (showPointsProp) {
       const editablePoints = getEditablePoints(commands);
       let prevEndpoint: { x: number; y: number } | null = null;
       for (const cmd of commands) {
@@ -896,6 +924,7 @@ export const GlyphEditor: React.FC<GlyphEditorProps> = ({
           }
         }
       }
+      } // end showPointsProp
     }
 
     // Pen tool live preview
@@ -1178,6 +1207,14 @@ export const GlyphEditor: React.FC<GlyphEditorProps> = ({
         else if (h.includes('t')) { anchorY = origMinY; liveSy = (bh + dragDy) / bh; }
         if (h === 'tc' || h === 'bc') liveSx = 1;
         if (h === 'ml' || h === 'mr') liveSy = 1;
+
+        // Shift: lock aspect ratio for corner handles
+        const isCorner = h.length === 2 && !h.startsWith('skew_');
+        if (shapeToolDrag?.shiftKey && isCorner) {
+          const uniform = Math.max(Math.abs(liveSx), Math.abs(liveSy));
+          liveSx = uniform * Math.sign(liveSx || 1);
+          liveSy = uniform * Math.sign(liveSy || 1);
+        }
       }
 
       // Compute live rotation angle
@@ -1702,7 +1739,7 @@ export const GlyphEditor: React.FC<GlyphEditorProps> = ({
         }
       }
     }
-  }, [commands, canvasSize, font, glyph, zoom, panX, panY, hoveredPoint, selectedSet, selectedPoints, getMapper, COLORS, gridSettings, showRulers, showPathDirection, isMarquee, marqueeStart, marqueeEnd, cursorPos, cornerPoints, activeTool, penCursorGlyph, penSegmentSnap, penDragState, showFill, theme, contextGlyphs, metricLines, shapeDragStart, shapeDragCurrent, sliceDragStart, sliceDragCurrent, selectedContours, shapeToolDrag, componentInstances, snapGuides, hoveredSegmentId, segmentDefs, segmentFlipAlt]);
+  }, [commands, canvasSize, font, glyph, zoom, panX, panY, hoveredPoint, selectedSet, selectedPoints, getMapper, COLORS, gridSettings, showRulers, showPathDirection, isMarquee, marqueeStart, marqueeEnd, cursorPos, cornerPoints, activeTool, penCursorGlyph, penSegmentSnap, penDragState, showFill, showPointsProp, theme, contextGlyphs, metricLines, shapeDragStart, shapeDragCurrent, sliceDragStart, sliceDragCurrent, selectedContours, shapeToolDrag, componentInstances, snapGuides, hoveredSegmentId, segmentDefs, segmentFlipAlt]);
 
   const getCanvasPos = useCallback(
     (e: React.MouseEvent): { x: number; y: number } => {
@@ -1779,10 +1816,14 @@ export const GlyphEditor: React.FC<GlyphEditorProps> = ({
       candX.push({ pos: 0, extMin: -bigY, extMax: bigY });
       if (advW > 0) candX.push({ pos: advW, extMin: -bigY, extMax: bigY });
 
-      // Font metric lines
+      // Font metric / guide lines
       for (const ml of metricLines) {
         if (!ml.visible) continue;
-        candY.push({ pos: ml.value, extMin: -bigY, extMax: bigY });
+        if (ml.axis === 'v') {
+          candX.push({ pos: ml.value, extMin: -bigY, extMax: bigY });
+        } else {
+          candY.push({ pos: ml.value, extMin: -bigY, extMax: bigY });
+        }
       }
       // Baseline always
       candY.push({ pos: 0, extMin: -bigY, extMax: bigY });
@@ -2409,7 +2450,11 @@ export const GlyphEditor: React.FC<GlyphEditorProps> = ({
 
               for (const ml of metricLines) {
                 if (!ml.visible) continue;
-                candY.push({ pos: ml.value, extMin: -bigY, extMax: bigY });
+                if (ml.axis === 'v') {
+                  candX.push({ pos: ml.value, extMin: -bigY, extMax: bigY });
+                } else {
+                  candY.push({ pos: ml.value, extMin: -bigY, extMax: bigY });
+                }
               }
               candY.push({ pos: 0, extMin: -bigY, extMax: bigY });
 
@@ -2464,14 +2509,14 @@ export const GlyphEditor: React.FC<GlyphEditorProps> = ({
 
               const snappedX = glyphPos.x + bestSnapDx;
               const snappedY = glyphPos.y + bestSnapDy;
-              setShapeToolDrag(prev => prev ? { ...prev, currentGlyph: { x: snappedX, y: snappedY } } : null);
+              setShapeToolDrag(prev => prev ? { ...prev, currentGlyph: { x: snappedX, y: snappedY }, shiftKey: e.shiftKey } : null);
             } else {
               setSnapGuides([]);
-              setShapeToolDrag(prev => prev ? { ...prev, currentGlyph: { x: glyphPos.x, y: glyphPos.y } } : null);
+              setShapeToolDrag(prev => prev ? { ...prev, currentGlyph: { x: glyphPos.x, y: glyphPos.y }, shiftKey: e.shiftKey } : null);
             }
           } else {
             setSnapGuides([]);
-            setShapeToolDrag(prev => prev ? { ...prev, currentGlyph: { x: glyphPos.x, y: glyphPos.y } } : null);
+            setShapeToolDrag(prev => prev ? { ...prev, currentGlyph: { x: glyphPos.x, y: glyphPos.y }, shiftKey: e.shiftKey } : null);
           }
         }
         return;
@@ -2886,14 +2931,15 @@ export const GlyphEditor: React.FC<GlyphEditorProps> = ({
             if (drag.handle.includes('b')) { anchorY = allMaxY; sy = (bh - dy) / bh; }
             else if (drag.handle.includes('t')) { anchorY = allMinY; sy = (bh + dy) / bh; }
 
-            if (e.shiftKey) {
+            if (drag.handle === 'tc' || drag.handle === 'bc') sx = 1;
+            if (drag.handle === 'ml' || drag.handle === 'mr') sy = 1;
+
+            const isCornerHandle = drag.handle.length === 2;
+            if (e.shiftKey && isCornerHandle) {
               const uniform = Math.max(Math.abs(sx), Math.abs(sy));
               sx = uniform * Math.sign(sx || 1);
               sy = uniform * Math.sign(sy || 1);
             }
-
-            if (drag.handle === 'tc' || drag.handle === 'bc') sx = 1;
-            if (drag.handle === 'ml' || drag.handle === 'mr') sy = 1;
 
             const newCmds = scaleContourCommands(commands, selectedContours, sx, sy, anchorX, anchorY);
             onCommandsChange(newCmds);

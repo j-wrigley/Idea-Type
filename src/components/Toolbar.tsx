@@ -26,6 +26,8 @@ interface ToolbarProps {
   onTogglePathDirection: () => void;
   showFill: boolean;
   onToggleFill: () => void;
+  showPoints: boolean;
+  onTogglePoints: () => void;
   activeTool: EditorTool;
   onToolChange: (tool: EditorTool) => void;
   onReverseContour: () => void;
@@ -57,6 +59,8 @@ export const Toolbar: React.FC<ToolbarProps> = ({
   onTogglePathDirection,
   showFill,
   onToggleFill,
+  showPoints,
+  onTogglePoints,
   activeTool,
   onToolChange,
   onReverseContour,
@@ -258,6 +262,21 @@ export const Toolbar: React.FC<ToolbarProps> = ({
         >
           <svg width="16" height="16" viewBox="0 0 24 24" fill={showFill ? 'currentColor' : 'none'} stroke="currentColor" strokeWidth="2">
             <rect x="3" y="3" width="18" height="18" rx="2" ry="2" />
+          </svg>
+        </button>
+        <button
+          className={`toolbar-btn ${showPoints ? 'active' : ''}`}
+          onClick={onTogglePoints}
+          title="Toggle Anchor Points (P)"
+        >
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+            <circle cx="12" cy="12" r="3" fill={showPoints ? 'currentColor' : 'none'} />
+            <circle cx="5" cy="5" r="2" fill={showPoints ? 'currentColor' : 'none'} />
+            <circle cx="19" cy="5" r="2" fill={showPoints ? 'currentColor' : 'none'} />
+            <circle cx="19" cy="19" r="2" fill={showPoints ? 'currentColor' : 'none'} />
+            <line x1="7" y1="7" x2="10" y2="10" opacity="0.5" />
+            <line x1="14" y1="10" x2="17" y2="7" opacity="0.5" />
+            <line x1="14" y1="14" x2="17" y2="17" opacity="0.5" />
           </svg>
         </button>
       </div>

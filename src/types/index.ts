@@ -94,6 +94,7 @@ export interface MetricLine {
   visible: boolean;
   editable: boolean;
   builtin: boolean;
+  axis: 'h' | 'v';
 }
 
 export function createDefaultMetrics(font: Font): MetricLine[] {
@@ -105,13 +106,13 @@ export function createDefaultMetrics(font: Font): MetricLine[] {
   const overshoot = Math.round(font.unitsPerEm * 0.01) || 10;
 
   return [
-    { id: 'baseline', label: 'Baseline', value: 0, visible: true, editable: false, builtin: true },
-    { id: 'ascender', label: 'Ascender', value: font.ascender, visible: true, editable: true, builtin: true },
-    { id: 'descender', label: 'Descender', value: font.descender, visible: true, editable: true, builtin: true },
-    { id: 'xHeight', label: 'x-Height', value: xHeight, visible: true, editable: true, builtin: true },
-    { id: 'capHeight', label: 'Cap Height', value: capHeight, visible: true, editable: true, builtin: true },
-    { id: 'ascOvershoot', label: 'Asc. Overshoot', value: font.ascender + overshoot, visible: false, editable: true, builtin: true },
-    { id: 'descOvershoot', label: 'Desc. Overshoot', value: font.descender - overshoot, visible: false, editable: true, builtin: true },
+    { id: 'baseline', label: 'Baseline', value: 0, visible: true, editable: false, builtin: true, axis: 'h' },
+    { id: 'ascender', label: 'Ascender', value: font.ascender, visible: true, editable: true, builtin: true, axis: 'h' },
+    { id: 'descender', label: 'Descender', value: font.descender, visible: true, editable: true, builtin: true, axis: 'h' },
+    { id: 'xHeight', label: 'x-Height', value: xHeight, visible: true, editable: true, builtin: true, axis: 'h' },
+    { id: 'capHeight', label: 'Cap Height', value: capHeight, visible: true, editable: true, builtin: true, axis: 'h' },
+    { id: 'ascOvershoot', label: 'Asc. Overshoot', value: font.ascender + overshoot, visible: false, editable: true, builtin: true, axis: 'h' },
+    { id: 'descOvershoot', label: 'Desc. Overshoot', value: font.descender - overshoot, visible: false, editable: true, builtin: true, axis: 'h' },
   ];
 }
 
@@ -150,6 +151,7 @@ declare global {
       openFontFile: () => Promise<{ buffer: ArrayBuffer; fileName: string } | null>;
       saveFontFile: (arrayBuffer: ArrayBuffer, defaultName: string) => Promise<boolean>;
       readClipboard: () => { html: string; text: string };
+      writeClipboard: (text: string, html: string) => void;
     };
   }
 }

@@ -14,7 +14,7 @@ import { TextPreview } from './components/TextPreview';
 import { KerningPanel } from './components/KerningPanel';
 import { ExportDialog, type ExportMetadata } from './components/ExportDialog';
 import { cloneCommands, removeDuplicatePoints, applyTransform, applyDesignTools, getContourRanges, reverseContour, reverseContours, makeContourCutout, makeContourFill, makeIndent, extractContours, removeContours, translateContourCommands, flipContourCommands, scaleContourCommands, getContourBounds, breakSegment } from './utils/pathTransforms';
-import { parseSvgFromClipboard, fitToGlyphSpace } from './utils/svgPaste';
+import { parseSvgFromClipboard, fitToGlyphSpace, commandsToSvg, extractFvePayload } from './utils/svgPaste';
 import { optimizeOutlines } from './utils/outlineOptimizer';
 import { slicePathWithLine } from './utils/slicePath';
 import { exportFont } from './utils/fontExport';
@@ -48,6 +48,7 @@ export default function App() {
   const [pendingTracking, setPendingTracking] = useState(0);
   const [showExportDialog, setShowExportDialog] = useState(false);
   const [showFill, setShowFill] = useState(false);
+  const [showPoints, setShowPoints] = useState(true);
   const [contextGlyphs, setContextGlyphs] = useState<number[]>([]);
   const [metricLines, setMetricLines] = useState<MetricLine[]>([]);
   const [selectedContours, setSelectedContours] = useState<number[]>([]);
@@ -309,8 +310,9 @@ export default function App() {
   const handleApplyDesignToolsToAll = useCallback(() => {
     if (!fontState.font || isDefaultDesignTools(designTools)) return;
     const f = fontState.font;
+    const upm = f.unitsPerEm;
     const fontInfo = {
-      unitsPerEm: f.unitsPerEm,
+      unitsPerEm: upm,
       ascender: f.ascender,
       descender: f.descender,
     };
@@ -319,14 +321,19 @@ export default function App() {
     for (let i = 0; i < f.glyphs.length; i++) {
       const g = f.glyphs.get(i);
       if (g.path && g.path.commands && g.path.commands.length > 0) {
-        // For the selected glyph, use the raw `commands` state instead of
-        // g.path.commands, which already has design tools applied via the
-        // live preview sync in the useEffect.
-        const source = (i === selectedIdx) ? commands : g.path.commands;
+        let source: PathCommand[];
+        if (i === selectedIdx) {
+          source = commands;
+        } else {
+          const own = glyphOwnCommandsRef.current[i];
+          source = own
+            ? cloneCommands(own)
+            : removeDuplicatePoints(cloneCommands(g.path.commands));
+        }
         const { commands: result, advanceWidthDelta } = applyDesignTools(source, designTools, fontInfo);
         const p = new opentype.Path();
         p.commands = result;
-        p.unitsPerEm = f.unitsPerEm;
+        p.unitsPerEm = upm;
         g.path = p;
         if (advanceWidthDelta !== 0) {
           g.advanceWidth = Math.max(0, (g.advanceWidth ?? 0) + advanceWidthDelta);
@@ -1124,18 +1131,56 @@ export default function App() {
       }
       if (e.metaKey && e.key === 'c') {
         e.preventDefault();
-        if (activeTool === 'shape' && selectedContours.length > 0) {
-          contourClipboardRef.current = extractContours(commands, selectedContours);
+        let copied: PathCommand[];
+        const isContourCopy = activeTool === 'shape' && selectedContours.length > 0;
+        if (isContourCopy) {
+          copied = extractContours(commands, selectedContours);
+          contourClipboardRef.current = copied;
         } else {
-          clipboardRef.current = cloneCommands(commands);
+          copied = cloneCommands(commands);
+          clipboardRef.current = copied;
         }
+        try {
+          const payload = JSON.stringify({ type: isContourCopy ? 'contours' : 'glyph', commands: copied });
+          const ascender = fontState.font?.ascender ?? 800;
+          const svgStr = commandsToSvg(copied, ascender, payload);
+          window.electronAPI.writeClipboard(svgStr, svgStr);
+        } catch { /* browser fallback — in-memory only */ }
         return;
       }
       if (e.metaKey && e.key === 'v') {
         e.preventDefault();
-        // Read system clipboard via Electron's native clipboard module
         try {
           const { html, text } = window.electronAPI.readClipboard();
+
+          // Check for embedded FVE data (cross-window paste)
+          const fveData = extractFvePayload(text) || extractFvePayload(html);
+          if (fveData && fveData.commands?.length > 0) {
+            const cmds = fveData.commands as PathCommand[];
+            if (fveData.type === 'contours') {
+              history.pushState(commands);
+              const pasted = cloneCommands(cmds);
+              const offset = translateContourCommands(
+                pasted,
+                Array.from({ length: getContourRanges(pasted).length }, (_, i) => i),
+                20, 20,
+              );
+              const newCmds = [...commands, ...offset];
+              setCommands(newCmds);
+              const ranges = getContourRanges(newCmds);
+              const pastedRanges = getContourRanges(offset);
+              setSelectedContours(Array.from({ length: pastedRanges.length }, (_, i) => ranges.length - pastedRanges.length + i));
+              setActiveTool('shape');
+            } else {
+              history.pushState(commands);
+              setCommands(cloneCommands(cmds));
+              setTransform(DEFAULT_TRANSFORM);
+              setSelectedPoints([]);
+            }
+            return;
+          }
+
+          // Check for SVG from external apps (Figma, Illustrator, etc.)
           const svgCommands = parseSvgFromClipboard(html, text);
           if (svgCommands && svgCommands.length > 0 && fontState.font) {
             const fitted = fitToGlyphSpace(svgCommands, fontState.font.unitsPerEm, fontState.font.ascender);
@@ -1261,6 +1306,9 @@ export default function App() {
       if (e.key === 'f' || e.key === 'F') {
         if (!e.metaKey) { e.preventDefault(); setShowFill((s) => !s); return; }
       }
+      if (e.key === 'p' || e.key === 'P') {
+        if (!e.metaKey) { e.preventDefault(); setShowPoints((s) => !s); return; }
+      }
 
       const nudgeAmount = e.shiftKey && !e.altKey ? 10 : 1;
       const scaleUp = 1.05;
@@ -1372,6 +1420,8 @@ export default function App() {
         onTogglePathDirection={() => setShowPathDirection((d) => !d)}
         showFill={showFill}
         onToggleFill={() => setShowFill((f) => !f)}
+        showPoints={showPoints}
+        onTogglePoints={() => setShowPoints((p) => !p)}
         activeTool={activeTool}
         onToolChange={setActiveTool}
         onReverseContour={handleReverseContour}
@@ -1444,6 +1494,7 @@ export default function App() {
                 onCornerPointsChange={handleToggleCornerPoint}
                 onSetCornerPoints={handleSetCornerPoints}
                 showFill={showFill}
+                showPoints={showPoints}
                 contextGlyphs={contextGlyphs}
                 onSwitchActiveGlyph={handleSwitchActiveGlyph}
                 metricLines={metricLines}

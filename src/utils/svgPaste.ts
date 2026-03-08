@@ -328,3 +328,75 @@ export function fitToGlyphSpace(
     return out;
   });
 }
+
+/**
+ * Convert PathCommands (glyph coordinates, Y-up) to an SVG string.
+ * Flips Y so the result is a standard SVG (Y-down).
+ */
+/**
+ * Convert PathCommands (glyph coordinates, Y-up) to an SVG string.
+ * Flips Y so the result is a standard SVG (Y-down).
+ * If `fvePayload` is provided, it's embedded as a `data-fve` attribute
+ * on the root <svg> element for lossless cross-window paste.
+ */
+export function commandsToSvg(
+  commands: PathCommand[],
+  ascender: number,
+  fvePayload?: string,
+): string {
+  if (commands.length === 0) return '';
+
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  for (const c of commands) {
+    for (const [x, y] of [[c.x, c.y], [c.x1, c.y1], [c.x2, c.y2]]) {
+      if (x !== undefined && y !== undefined) {
+        if (x < minX) minX = x;
+        if (x > maxX) maxX = x;
+        const flipped = ascender - y;
+        if (flipped < minY) minY = flipped;
+        if (flipped > maxY) maxY = flipped;
+      }
+    }
+  }
+
+  const flipY = (y: number) => ascender - y;
+
+  const parts: string[] = [];
+  for (const c of commands) {
+    switch (c.type) {
+      case 'M': parts.push(`M${c.x} ${flipY(c.y!)}`); break;
+      case 'L': parts.push(`L${c.x} ${flipY(c.y!)}`); break;
+      case 'Q': parts.push(`Q${c.x1} ${flipY(c.y1!)},${c.x} ${flipY(c.y!)}`); break;
+      case 'C': parts.push(`C${c.x1} ${flipY(c.y1!)},${c.x2} ${flipY(c.y2!)},${c.x} ${flipY(c.y!)}`); break;
+      case 'Z': parts.push('Z'); break;
+    }
+  }
+
+  const d = parts.join(' ');
+  const w = maxX - minX || 1;
+  const h = maxY - minY || 1;
+
+  const dataAttr = fvePayload
+    ? ` data-fve="${fvePayload.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;')}"`
+    : '';
+
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="${minX} ${minY} ${w} ${h}" width="${w}" height="${h}"${dataAttr}><path d="${d}" fill="black"/></svg>`;
+}
+
+/**
+ * Try to extract embedded FVE commands from an SVG string
+ * that was written by our copy handler.
+ */
+export function extractFvePayload(svgText: string): { type: string; commands: PathCommand[] } | null {
+  const match = svgText.match(/data-fve="([^"]*)"/);
+  if (!match) return null;
+  try {
+    const decoded = match[1]
+      .replace(/&quot;/g, '"')
+      .replace(/&lt;/g, '<')
+      .replace(/&amp;/g, '&');
+    return JSON.parse(decoded);
+  } catch {
+    return null;
+  }
+}

@@ -17,6 +17,8 @@ export interface DesignToolValues {
   inkTrap: number;
   serif: number;
   overshoot: number;
+  cornerRadius: number;
+  smooth: number;
 }
 
 export const DEFAULT_DESIGN_TOOLS: DesignToolValues = {
@@ -33,6 +35,8 @@ export const DEFAULT_DESIGN_TOOLS: DesignToolValues = {
   inkTrap: 0,
   serif: 0,
   overshoot: 0,
+  cornerRadius: 0,
+  smooth: 0,
 };
 
 export function isDefaultDesignTools(d: DesignToolValues): boolean {
@@ -42,7 +46,7 @@ export function isDefaultDesignTools(d: DesignToolValues): boolean {
     d.ascenderExtend === 0 && d.descenderExtend === 0 &&
     d.spacing === 0 && d.roundness === 0 &&
     d.slant === 0 && d.inkTrap === 0 && d.serif === 0 &&
-    d.overshoot === 0
+    d.overshoot === 0 && d.cornerRadius === 0 && d.smooth === 0
   );
 }
 
@@ -88,14 +92,63 @@ const SliderRow: React.FC<SliderRowProps> = ({
   unit = '',
   onChange,
 }) => {
+  const [editing, setEditing] = useState(false);
+  const [editText, setEditText] = useState('');
+
+  const displayValue = Number.isInteger(step) ? String(value) : value.toFixed(2);
+
+  const startEditing = useCallback(() => {
+    setEditText(displayValue);
+    setEditing(true);
+  }, [displayValue]);
+
+  const commitEdit = useCallback(() => {
+    setEditing(false);
+    const parsed = parseFloat(editText);
+    if (!isNaN(parsed)) {
+      const rounded = Math.round(parsed / step) * step;
+      onChange(Math.min(max, Math.max(min, rounded)));
+    }
+  }, [editText, min, max, step, onChange]);
+
+  const cancelEdit = useCallback(() => {
+    setEditing(false);
+  }, []);
+
+  const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      commitEdit();
+    } else if (e.key === 'Escape') {
+      e.preventDefault();
+      cancelEdit();
+    }
+    e.stopPropagation();
+  }, [commitEdit, cancelEdit]);
+
   return (
     <div className="slider-row">
       <div className="slider-header">
         <label className="slider-label">{label}</label>
-        <span className="slider-value">
-          {Number.isInteger(step) ? value : value.toFixed(2)}
-          {unit}
-        </span>
+        {editing ? (
+          <input
+            type="text"
+            className="slider-value-input"
+            value={editText}
+            onChange={(e) => setEditText(e.target.value)}
+            onBlur={commitEdit}
+            onKeyDown={handleKeyDown}
+            autoFocus
+          />
+        ) : (
+          <span
+            className="slider-value slider-value-clickable"
+            onClick={startEditing}
+            title="Click to type a value"
+          >
+            {displayValue}{unit}
+          </span>
+        )}
       </div>
       <div className="slider-track-container">
         <input
@@ -143,6 +196,7 @@ export const SliderPanel: React.FC<SliderPanelProps> = ({
   const [showDesignConfirm, setShowDesignConfirm] = useState(false);
   const [newLineName, setNewLineName] = useState('');
   const [newLineValue, setNewLineValue] = useState('0');
+  const [newLineAxis, setNewLineAxis] = useState<'h' | 'v'>('h');
   const [showAddLine, setShowAddLine] = useState(false);
 
   const handleToggleLine = useCallback((id: string) => {
@@ -162,11 +216,12 @@ export const SliderPanel: React.FC<SliderPanelProps> = ({
     if (!label) return;
     const value = parseInt(newLineValue) || 0;
     const id = `custom_${Date.now()}`;
-    onMetricLinesChange([...metricLines, { id, label, value, visible: true, editable: true, builtin: false }]);
+    onMetricLinesChange([...metricLines, { id, label, value, visible: true, editable: true, builtin: false, axis: newLineAxis }]);
     setNewLineName('');
     setNewLineValue('0');
+    setNewLineAxis('h');
     setShowAddLine(false);
-  }, [newLineName, newLineValue, metricLines, onMetricLinesChange]);
+  }, [newLineName, newLineValue, newLineAxis, metricLines, onMetricLinesChange]);
 
   const update = useCallback(
     (field: keyof TransformValues, value: number) => {
@@ -362,8 +417,11 @@ export const SliderPanel: React.FC<SliderPanelProps> = ({
 
       <div className="panel-section">
         <h3 className="panel-title">Guidelines</h3>
+        {metricLines.filter(l => l.axis !== 'v').length > 0 && (
+          <div className="guideline-group-label">Horizontal</div>
+        )}
         <div className="guidelines-list">
-          {metricLines.map((line) => (
+          {metricLines.filter(l => l.axis !== 'v').map((line) => (
             <div key={line.id} className="guideline-row">
               <input
                 type="checkbox"
@@ -388,8 +446,45 @@ export const SliderPanel: React.FC<SliderPanelProps> = ({
             </div>
           ))}
         </div>
+        {metricLines.filter(l => l.axis === 'v').length > 0 && (
+          <>
+            <div className="guideline-group-label">Vertical</div>
+            <div className="guidelines-list">
+              {metricLines.filter(l => l.axis === 'v').map((line) => (
+                <div key={line.id} className="guideline-row">
+                  <input
+                    type="checkbox"
+                    checked={line.visible}
+                    onChange={() => handleToggleLine(line.id)}
+                    title={`Toggle ${line.label}`}
+                  />
+                  <span className="guideline-label">{line.label}</span>
+                  <input
+                    type="number"
+                    className="guideline-value-input"
+                    value={line.value}
+                    onChange={(e) => handleLineValueChange(line.id, parseInt(e.target.value) || 0)}
+                  />
+                  <button className="guideline-remove-btn" onClick={() => handleRemoveLine(line.id)} title="Remove line">&times;</button>
+                </div>
+              ))}
+            </div>
+          </>
+        )}
         {showAddLine ? (
           <div className="guideline-add-form">
+            <div className="guideline-axis-toggle">
+              <button
+                className={`guideline-axis-btn${newLineAxis === 'h' ? ' active' : ''}`}
+                onClick={() => setNewLineAxis('h')}
+                title="Horizontal line"
+              >H</button>
+              <button
+                className={`guideline-axis-btn${newLineAxis === 'v' ? ' active' : ''}`}
+                onClick={() => setNewLineAxis('v')}
+                title="Vertical line"
+              >V</button>
+            </div>
             <input
               type="text"
               className="guideline-name-input"
@@ -402,7 +497,7 @@ export const SliderPanel: React.FC<SliderPanelProps> = ({
             <input
               type="number"
               className="guideline-value-input"
-              placeholder="Y"
+              placeholder={newLineAxis === 'h' ? 'Y' : 'X'}
               value={newLineValue}
               onChange={(e) => setNewLineValue(e.target.value)}
               onKeyDown={(e) => { if (e.key === 'Enter') handleAddCustomLine(); }}
@@ -418,6 +513,7 @@ export const SliderPanel: React.FC<SliderPanelProps> = ({
       <div className="panel-section">
         <h3 className="panel-title">Design Tools</h3>
         <SliderRow label="Weight" value={designTools.weight} min={-100} max={100} step={1} defaultValue={0} onChange={(v) => onDesignToolsChange({ ...designTools, weight: v })} />
+        <SliderRow label="Smooth" value={designTools.smooth} min={0} max={1000} step={1} defaultValue={0} onChange={(v) => onDesignToolsChange({ ...designTools, smooth: v })} />
         <SliderRow label="Width" value={designTools.width} min={-100} max={100} step={1} defaultValue={0} unit="%" onChange={(v) => onDesignToolsChange({ ...designTools, width: v })} />
         <SliderRow label="Contrast" value={designTools.contrast} min={-100} max={100} step={1} defaultValue={0} onChange={(v) => onDesignToolsChange({ ...designTools, contrast: v })} />
         <SliderRow label="Slant" value={designTools.slant} min={-30} max={30} step={1} defaultValue={0} unit="°" onChange={(v) => onDesignToolsChange({ ...designTools, slant: v })} />
@@ -426,6 +522,7 @@ export const SliderPanel: React.FC<SliderPanelProps> = ({
         <SliderRow label="Descender" value={designTools.descenderExtend} min={-100} max={100} step={1} defaultValue={0} onChange={(v) => onDesignToolsChange({ ...designTools, descenderExtend: v })} />
         <SliderRow label="Overshoot" value={designTools.overshoot} min={-50} max={50} step={1} defaultValue={0} onChange={(v) => onDesignToolsChange({ ...designTools, overshoot: v })} />
         <SliderRow label="Roundness" value={designTools.roundness} min={-100} max={100} step={1} defaultValue={0} onChange={(v) => onDesignToolsChange({ ...designTools, roundness: v })} />
+        <SliderRow label="Corner Radius" value={designTools.cornerRadius} min={0} max={1000} step={1} defaultValue={0} onChange={(v) => onDesignToolsChange({ ...designTools, cornerRadius: v })} />
         <SliderRow label="Ink Trap" value={designTools.inkTrap} min={0} max={100} step={1} defaultValue={0} onChange={(v) => onDesignToolsChange({ ...designTools, inkTrap: v })} />
         <SliderRow label="Serif" value={designTools.serif} min={0} max={100} step={1} defaultValue={0} onChange={(v) => onDesignToolsChange({ ...designTools, serif: v })} />
         <SliderRow label="Optical Size" value={designTools.opticalSize} min={-50} max={50} step={1} defaultValue={0} onChange={(v) => onDesignToolsChange({ ...designTools, opticalSize: v })} />

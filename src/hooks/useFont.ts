@@ -1,6 +1,7 @@
 import { useState, useCallback, useRef } from 'react';
 import opentype, { type Font } from 'opentype.js';
 import type { FontState } from '../types';
+import { convertToTtfIfNeeded } from '../utils/fontExport';
 
 export function useFont() {
   const [fontState, setFontState] = useState<FontState>({
@@ -17,27 +18,39 @@ export function useFont() {
     const result = await window.electronAPI.openFontFile();
     if (!result) return;
 
-    const font = opentype.parse(result.buffer);
-    modifiedRef.current = new Set();
-    setFontState({
-      font,
-      fileName: result.fileName,
-      selectedGlyphIndex: null,
-      originalBuffer: result.buffer.slice(0),
-      modifiedGlyphs: modifiedRef.current,
-    });
+    try {
+      const buffer = await convertToTtfIfNeeded(result.buffer);
+      const font = opentype.parse(buffer);
+      modifiedRef.current = new Set();
+      setFontState({
+        font,
+        fileName: result.fileName,
+        selectedGlyphIndex: null,
+        originalBuffer: buffer.slice(0),
+        modifiedGlyphs: modifiedRef.current,
+      });
+    } catch (err) {
+      console.error('Failed to load font:', err);
+      alert(`Could not open font file: ${err instanceof Error ? err.message : String(err)}`);
+    }
   }, []);
 
-  const loadFontFromBuffer = useCallback((buffer: ArrayBuffer, fileName: string) => {
-    const font = opentype.parse(buffer);
-    modifiedRef.current = new Set();
-    setFontState({
-      font,
-      fileName,
-      selectedGlyphIndex: null,
-      originalBuffer: buffer.slice(0),
-      modifiedGlyphs: modifiedRef.current,
-    });
+  const loadFontFromBuffer = useCallback(async (buffer: ArrayBuffer, fileName: string) => {
+    try {
+      const ttfBuffer = await convertToTtfIfNeeded(buffer);
+      const font = opentype.parse(ttfBuffer);
+      modifiedRef.current = new Set();
+      setFontState({
+        font,
+        fileName,
+        selectedGlyphIndex: null,
+        originalBuffer: ttfBuffer.slice(0),
+        modifiedGlyphs: modifiedRef.current,
+      });
+    } catch (err) {
+      console.error('Failed to load font:', err);
+      alert(`Could not open font file: ${err instanceof Error ? err.message : String(err)}`);
+    }
   }, []);
 
   const createNewFont = useCallback(() => {

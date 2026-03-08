@@ -4,8 +4,10 @@
   "description": "A macOS Electron app for editing font vector outlines",
   "main": "dist-electron/main.js",
   "scripts": {
+    "postinstall": "mkdir -p public && cp node_modules/fonteditor-core/woff2/woff2.wasm public/woff2.wasm 2>/dev/null || true",
     "dev": "unset ELECTRON_RUN_AS_NODE && vite",
-    "build": "tsc && vite build",
+    "prebuild": "mkdir -p public && cp node_modules/fonteditor-core/woff2/woff2.wasm public/woff2.wasm 2>/dev/null || true",
+    "build": "npm run prebuild && tsc && vite build",
     "preview": "vite preview",
     "package": "unset ELECTRON_RUN_AS_NODE && npm run build && electron-builder --mac"
   },
